@@ -83,7 +83,10 @@ def add_queue(d):
     ap = d["AIRPORT"].values
     rw = d["RUNWAY_mvt"].astype(str).values
     out = {k: np.full(len(d), np.nan) for k in
-           ["q_dep_surf", "q_rwy_surf", "q_arr_surf", "q_rwy_ahead", "q_rwy_prev", "q_rwy_next"]}
+           ["q_dep_surf", "q_rwy_surf", "q_arr_surf", "q_rwy_ahead", "q_rwy_prev", "q_rwy_next",
+            "q_stand_since_arr", "q_nbr_taxi_20m", "q_nbr_taxi_60m", "q_rwy_nbr_taxi_30m"]}
+    stand = d["STAND_mvt"].astype(str).values
+    v_proxy = np.clip(m - p, 0, 7200.0)  # taxi proxy of each departure: takeoff - (estimated) push
     out["q_push_proxied"] = (~have).astype(float)
     for code in np.unique(ap):
         ia = np.where(ap == code)[0]
@@ -96,6 +99,24 @@ def add_queue(d):
             land = np.sort(m[iarr])
             inb = np.sort(np.where(np.isfinite(b[iarr]), b[iarr], m[iarr] + 300.0))
             out["q_arr_surf"][idep] = np.searchsorted(land, x, "right") - np.searchsorted(inb, x, "right")
+        # recent taxi level at the airport: mean proxy of departures that took off just before i
+        Mi = np.argsort(m[idep]); Ms = m[idep][Mi]; C = np.concatenate([[0.0], np.cumsum(v_proxy[idep][Mi])])
+        for w, name in [(1200, "q_nbr_taxi_20m"), (3600, "q_nbr_taxi_60m")]:
+            lo = np.searchsorted(Ms, m[idep] - w, "left"); hi = np.searchsorted(Ms, m[idep], "left")
+            cnt = hi - lo
+            out[name][idep] = np.where(cnt > 0, (C[hi] - C[lo]) / np.maximum(cnt, 1), np.nan)
+        # turnaround at the gate: time from the last arrival in-block at this stand to push-back
+        ok_a = iarr[np.isfinite(b[iarr])] if len(iarr) else iarr
+        if len(ok_a):
+            sa = pd.DataFrame({"st": stand[ok_a], "b": b[ok_a]}).sort_values("b")
+            grp = {k: g["b"].values for k, g in sa.groupby("st")}
+            dd = pd.DataFrame({"i": idep, "st": stand[idep], "x": p[idep]})
+            for k, g in dd.groupby("st"):
+                arrb = grp.get(k)
+                if arrb is None:
+                    continue
+                pos = np.searchsorted(arrb, g["x"].values, "right") - 1
+                out["q_stand_since_arr"][g["i"].values] = np.where(pos >= 0, g["x"].values - arrb[np.maximum(pos, 0)], np.nan)
         for r in np.unique(rw[idep]):
             ir = idep[rw[idep] == r]
             Pr, Mr = np.sort(p[ir]), np.sort(m[ir])
@@ -108,6 +129,9 @@ def add_queue(d):
             prev = np.where(k > 0, Mr[np.maximum(k - 1, 0)], np.nan)
             nxt_i = np.searchsorted(Mr, m[ir], "right")
             nxt = np.where(nxt_i < len(Mr), Mr[np.minimum(nxt_i, len(Mr) - 1)], np.nan)
+            Ri = np.argsort(m[ir]); Rs = m[ir][Ri]; Cr = np.concatenate([[0.0], np.cumsum(v_proxy[ir][Ri])])
+            lo = np.searchsorted(Rs, m[ir] - 1800, "left"); hi = np.searchsorted(Rs, m[ir], "left")
+            out["q_rwy_nbr_taxi_30m"][ir] = np.where(hi > lo, (Cr[hi] - Cr[lo]) / np.maximum(hi - lo, 1), np.nan)
             out["q_rwy_prev"][ir] = m[ir] - prev
             out["q_rwy_next"][ir] = nxt - m[ir]
     return pd.DataFrame(out, index=d.index)
@@ -164,25 +188,54 @@ def rmse(a, b):
     return float(np.sqrt(np.mean((np.asarray(a) - np.asarray(b)) ** 2)))
 
 
-def two_stage(Xtr, ytr, eq_tr, Xte, sched_gap_te, rounds_reg=700, rounds_clf=300):
+def member_params(i):
+    """Diverse LightGBM members: different seeds, tree sizes and column sampling."""
+    leaves = [127, 255, 63, 191][i % 4]
+    ff = [0.8, 0.7, 0.9, 0.75][i % 4]
+    return dict(PARAMS, num_leaves=leaves, feature_fraction=ff, seed=i, bagging_seed=i,
+                feature_fraction_seed=i)
+
+
+def catboost_reg(Xtr, ytr, Xte, iters=600):
+    from catboost import CatBoostRegressor, Pool
+    cats = [c for c in CATS if c in Xtr]
+    f = lambda X: X.assign(**{c: X[c].astype(str) for c in cats})
+    m = CatBoostRegressor(iterations=iters, depth=8, learning_rate=0.1, loss_function="RMSE",
+                          thread_count=8, verbose=0, random_seed=0, one_hot_max_size=2)
+    m.fit(Pool(f(Xtr), ytr, cat_features=cats))
+    return m.predict(Pool(f(Xte), cat_features=cats))
+
+
+def two_stage(Xtr, ytr, eq_tr, Xte, sched_gap_te, rounds_reg=700, rounds_clf=300, seeds=1,
+              use_cat=False, members=None):
     """Mixture of two regimes (see README).
 
     eq = |BLOCK - SCHED| <= 60 s, i.e. the off-block stamp is a copy of the schedule. For those
     flights the taxi time equals MVT - SCHED, which is known at prediction time.
-      stage 1: classifier p = P(eq)
-      stage 2: regressor on the normal flights only (target clipped)
+      stage 1: classifier p = P(eq), averaged over `seeds` LightGBM members
+      stage 2: regressor on the normal flights only (target clipped): the mean of the LightGBM
+               members and, with use_cat, a CatBoost member (equal weight to the LightGBM mean)
       prediction = p * (MVT - SCHED) + (1 - p) * regressor    (expectation, never argmax)
-    Also returns a single plain regressor trained on every row for comparison.
+    If `members` is a dict it receives the individual regressor/classifier predictions.
     """
     align_cats(Xtr, Xte)
-    clf = lgb.train({**PARAMS, "objective": "binary"}, lgb.Dataset(Xtr, eq_tr.astype(int)), rounds_clf)
-    p = clf.predict(Xte)
     n = ~eq_tr.values
-    reg = lgb.train({**PARAMS, "objective": "regression"},
-                    lgb.Dataset(Xtr[n], ytr[n].clip(30, 7200)), rounds_reg)
-    r = reg.predict(Xte)
-    mix = p * sched_gap_te + (1 - p) * r
-    return mix, p, r
+    yn = ytr[n].clip(30, 7200)
+    ps, rs = [], []
+    for i in range(seeds):
+        P = member_params(i)
+        clf = lgb.train({**P, "objective": "binary"}, lgb.Dataset(Xtr, eq_tr.astype(int)), rounds_clf)
+        ps.append(clf.predict(Xte))
+        reg = lgb.train({**P, "objective": "regression"}, lgb.Dataset(Xtr[n], yn), rounds_reg)
+        rs.append(reg.predict(Xte))
+        print(f"  member {i} done", flush=True)
+    p = np.mean(ps, axis=0)
+    r_lgb = np.mean(rs, axis=0)
+    r_cat = catboost_reg(Xtr[n], yn, Xte) if use_cat else None
+    if members is not None:
+        members.update(ps=ps, rs=rs, r_cat=r_cat)
+    r = r_lgb if r_cat is None else 0.5 * r_lgb + 0.5 * r_cat
+    return p * sched_gap_te + (1 - p) * r, p, r
 
 
 CELLS = {"apst_rwy": ["ap", "stand", "rwy"], "apst": ["ap", "stand"], "aprwy": ["ap", "rwy"]}
@@ -249,6 +302,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
     ap.add_argument("--no-submit", action="store_true")
+    ap.add_argument("--seeds", type=int, default=3, help="LightGBM members")
+    ap.add_argument("--cat", action="store_true", help="add a CatBoost regressor member")
+    ap.add_argument("--dump", help="write validation predictions to this parquet")
     ap.add_argument("--out", default="submission.parquet")
     a = ap.parse_args()
 
@@ -283,8 +339,14 @@ def main():
 
     ps, _ = single(X[tr].copy(), y[tr], X[va].copy())
     print(f"single regressor, all rows        RMSE {rmse(y[va], ps):.1f}s")
+    mem = {}
     mix, p, r = two_stage(X[tr].copy(), y[tr].reset_index(drop=True), eq[tr].reset_index(drop=True),
-                          X[va].copy(), gap[va].values)
+                          X[va].copy(), gap[va].values, seeds=a.seeds, use_cat=a.cat, members=mem)
+    g_va = gap[va].values
+    for i, ri in enumerate(mem["rs"]):
+        print(f"  member {i} alone (plain mixture)        RMSE {rmse(y[va], mem['ps'][i] * g_va + (1 - mem['ps'][i]) * ri):.1f}s")
+    if mem["r_cat"] is not None:
+        print(f"  CatBoost regressor alone                 RMSE {rmse(y[va], p * g_va + (1 - p) * mem['r_cat']):.1f}s")
     print(f"two-stage mixture                 RMSE {rmse(y[va], mix):.1f}s")
     nm = d["FLIGHT_ID_mvt"].isna().reset_index(drop=True)
     nmf = nm_frame(d.reset_index(drop=True))
@@ -301,6 +363,12 @@ def main():
     mix_all_nm = mix2
     print(f"  + NM stage on all NM-missing rows ({int(tn.sum()):,} train rows, {int(vn.sum()):,} valid rows) RMSE {rmse(y[va], mix2):.1f}s")
     mix = hyb
+    if a.dump:
+        vv = d.reset_index(drop=True)[va.values]
+        pd.DataFrame({"mvt_id": vv["MVT_ID_mvt"].values, "ap": vv["ADEP_mvt"].values, "flight": vv["FLIGHT_mvt"].values,
+                      "y": y[va].values, "pred": mix, "p_copy": p, "reg": r, "gap": gap[va].values,
+                      "is_copy": eq[va].values, "nm": nm[va].values, "stand": vv["STAND_mvt"].values,
+                      "month": month[va].values}).to_parquet(a.dump)
     print(f"FINAL (mixture + hybrid NM stage)     RMSE {rmse(y[va], mix):.1f}s")
     yv = y[va].values
     big = yv > 10800
@@ -325,7 +393,7 @@ def main():
     Fr = cell_stats(K[usable], yc[usable].values, Kr)
     Xr = pd.concat([Xr.reset_index(drop=True), Fr.reset_index(drop=True)], axis=1)
     pr, _, _ = two_stage(Xfull.copy(), y[full].reset_index(drop=True), eq[full].reset_index(drop=True),
-                         Xr.reset_index(drop=True), rgap)
+                         Xr.reset_index(drop=True), rgap, seeds=a.seeds, use_cat=a.cat)
     rnm = rd["FLIGHT_ID_mvt"].isna().values
     if rnm.any():
         fn = ok & nm

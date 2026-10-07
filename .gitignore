@@ -1,3 +1,6 @@
 __pycache__/
 *.parquet
 .venv/
+catboost_info/
+*.log
+opdi/
