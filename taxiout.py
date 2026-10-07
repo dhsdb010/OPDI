@@ -164,6 +164,16 @@ def features(df):
     for c in ["SCHED_TIME_UTC_mvt", "LOBT_flt", "IOBT_flt", "EOBT_1_flt", "AOBT_3_flt"]:
         if c in d:
             X["mvt_minus_" + c] = (t - d[c]).dt.total_seconds() / 60
+    # schedule-copy signals: does SCHED line up with the other planned/actual stamps, and is it a round time?
+    S = d["SCHED_TIME_UTC_mvt"]
+    for c, nm_ in [("AOBT_3_flt", "aobt"), ("EOBT_1_flt", "eobt"), ("LOBT_flt", "lobt"), ("IOBT_flt", "iobt")]:
+        if c in d:
+            X["dsched_" + nm_] = (S - d[c]).dt.total_seconds()
+    if "AOBT_3_flt" in d and "EOBT_1_flt" in d:
+        X["daobt_eobt"] = (d["AOBT_3_flt"] - d["EOBT_1_flt"]).dt.total_seconds()
+    X["sched_min5"] = S.dt.minute % 5
+    X["sched_sec"] = S.dt.second
+    X["mvt_sec"] = t.dt.second
     if "ARVT_3_flt" in d:
         X["flight_min"] = (d["ARVT_3_flt"] - d["AOBT_3_flt"]).dt.total_seconds() / 60
     X = pd.concat([X, Q], axis=1)
@@ -264,6 +274,25 @@ def cell_oof(K, y, usable, fold):
     return pd.concat(parts).loc[K.index]
 
 
+def copy_rates(K_fit, eq_fit, K_apply):
+    """Share of departures whose off-block stamp is a schedule copy, per stand / operator / runway."""
+    out = pd.DataFrame(index=K_apply.index)
+    fit = K_fit.assign(cp=np.asarray(eq_fit, dtype=float))
+    for name, cols in {"cp_apst": ["ap", "stand"], "cp_apop": ["ap", "op"], "cp_aprwy": ["ap", "rwy"]}.items():
+        g = fit.groupby(cols)["cp"].agg(rate="mean", n="size")
+        g.columns = [f"{name}_{c}" for c in g.columns]
+        out = out.join(K_apply[cols].join(g, on=cols).drop(columns=cols))
+    return out
+
+
+def copy_oof(K, eq, fold):
+    parts = []
+    for f in sorted(set(fold)):
+        te = fold == f
+        parts.append(copy_rates(K[~te], eq[~te], K[te]))
+    return pd.concat(parts).loc[K.index]
+
+
 def nm_stage(d_tr, y_tr, cp_tr, d_te):
     """Dedicated mixture for departures with no NM flight record (~1% of rows, but they hold
     ~90% of the multi-hour outliers, almost all at LIRF). Small model on a few columns only.
@@ -327,13 +356,17 @@ def main():
     print(f"mean-prediction RMSE {rmse(y[va], y[tr].mean()):.1f}s")
 
     K = pd.DataFrame({"ap": d["ADEP_mvt"].values, "stand": d["STAND_mvt"].astype(str).values,
-                      "rwy": d["RUNWAY_mvt"].astype(str).values})
+                      "rwy": d["RUNWAY_mvt"].astype(str).values,
+                      "op": d["AIRCRAFT_OPERATOR_flt"].astype(str).values})
     yc = y.clip(30, 7200)
     usable = ok & ~eq
     Ftr = cell_oof(K[tr], yc[tr].values, usable[tr].values, month[tr].values)
     Fva = cell_stats(K[tr][usable[tr].values], yc[tr][usable[tr]].values, K[va])
+    Ctr = copy_oof(K[tr], eq[tr].values, month[tr].values)
+    Cva = copy_rates(K[tr], eq[tr].values, K[va])
     Xbase = X
-    X = pd.concat([Xbase, pd.concat([Ftr, Fva]).reindex(Xbase.index)], axis=1)
+    X = pd.concat([Xbase, pd.concat([Ftr, Fva]).reindex(Xbase.index),
+                   pd.concat([Ctr, Cva]).reindex(Xbase.index)], axis=1)
     print(f"cell features: {Ftr.shape[1]} columns; stand/runway cell hit rate on valid "
           f"{Fva['apst_rwy_n'].notna().mean():.1%}")
 
@@ -390,7 +423,10 @@ def main():
                        "rwy": rd["RUNWAY_mvt"].astype(str).values})
     Fall = cell_oof(K[full], yc[full].values, usable[full].values, month[full].values)
     Xfull = pd.concat([Xbase[full], Fall.reindex(Xbase[full].index)], axis=1)
-    Fr = cell_stats(K[usable], yc[usable].values, Kr)
+    Kr["op"] = rd["AIRCRAFT_OPERATOR_flt"].astype(str).values
+    Call = copy_oof(K[full], eq[full].values, month[full].values)
+    Xfull = pd.concat([Xfull, Call.reindex(Xfull.index)], axis=1)
+    Fr = pd.concat([cell_stats(K[usable], yc[usable].values, Kr), copy_rates(K[full], eq[full].values, Kr)], axis=1)
     Xr = pd.concat([Xr.reset_index(drop=True), Fr.reset_index(drop=True)], axis=1)
     pr, _, _ = two_stage(Xfull.copy(), y[full].reset_index(drop=True), eq[full].reset_index(drop=True),
                          Xr.reset_index(drop=True), rgap, seeds=a.seeds, use_cat=a.cat)

@@ -20,6 +20,9 @@ Taxi-out time prediction for 10 European airports (EUROCONTROL PRC Data Challeng
   (`AOBT_3`, fallback takeoff - 15 min), takeoffs ahead on the runway, gaps to neighbouring takeoffs.
 - Neighbour taxi level: mean of (takeoff - AOBT_3) over departures that took off in the previous 20/60 min
   (airport) and 30 min (runway); a live read of how slow the airport is right now.
+- Copy detection: explicit SCHED minus AOBT_3/EOBT/LOBT/IOBT differences, SCHED minute-mod-5 and seconds, and
+  out-of-fold copy rates per (airport, stand), (airport, operator), (airport, runway). Improves both months
+  (Jan 364.4 -> 361.1, Jul 385.8 -> 357.4); normal flights 275.7 -> 271.4. Much of the July gain is on tail rows.
 - Ensemble option: `--seeds N --cat` averages N LightGBM members plus a CatBoost regressor.
 - Validation: train on 2025 months other than Jan and Jul, score RMSE on Jan + Jul 2025,
   outliers kept (dropping them makes the score look much better than it is).
@@ -33,6 +36,7 @@ Taxi-out time prediction for 10 European airports (EUROCONTROL PRC Data Challeng
 | + stand/runway cell statistics | 381 |
 | + congestion window fix, surface-queue features | 378 |
 | + neighbour taxi-level features (recent takeoffs' takeoff - AOBT_3) | 376 |
+| + schedule-copy features (SCHED vs AOBT_3/EOBT/LOBT/IOBT, round-time flags, OOF copy rates per stand/operator/runway) | 359 |
 
 ```bash
 pip install pandas pyarrow lightgbm scikit-learn
