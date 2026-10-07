@@ -102,4 +102,4 @@ cannot go much below that without a way to predict those rows.
   outliers kept): 359.6 s. The official score is not used to tune the model.
 - `quirky-honey_v2.parquet` official leaderboard RMSE: 347.24 s (rank 159/233 when checked on 2026-10-07; used as a sanity check only).
 - `quirky-honey_v3.parquet`: v2 plus the LOBT clip and METAR weather features; local holdout RMSE 353.3 s (3 LightGBM members, Jan+Jul 2025 held out, outliers kept). Official leaderboard RMSE: 314.14 s (rank 140/233 on 2026-10-07).
-- `quirky-honey_v5.parquet`: v3 plus the copy-impossible rule and per-airport blend; local holdout RMSE 352.1 s (Jan 357.4, Jul 347.8). Official score to be added after upload. (v4, the same without the per-airport blend, was not uploaded.)
+- `quirky-honey_v5.parquet`: v3 plus the copy-impossible rule and per-airport blend; local holdout RMSE 352.1 s (Jan 357.4, Jul 347.8). Official leaderboard RMSE: 311.85 s (rank 138/233 on 2026-10-07). (v4, the same without the per-airport blend, was not uploaded.)
