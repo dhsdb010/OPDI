@@ -61,6 +61,17 @@ python taxiout.py --data /path/to/data   # needs training_2025-*.parquet, rankin
 
 Data is not included in this repo; see https://prc-data-challenge-2026.netlify.app/data.html.
 
+## Official leaderboard history (RMSE, s)
+
+| File | Official RMSE | Rank |
+|---|---|---|
+| quirky-honey_v2 | 347.24 | 159 / 233 |
+| quirky-honey_v3 | 314.14 | 140 / 233 |
+| quirky-honey_v5 | 311.85 | 138 / 233 |
+| quirky-honey_v6 | 302.01 | 130 / 233 |
+
+The leaderboard was used as a sanity check only, never to choose features or tune rules.
+
 ## What worked / what did not
 Honest validation: train on 2025 except Jan+Jul, score Jan+Jul 2025, every departure kept (outliers included).
 
@@ -130,3 +141,4 @@ second stage on top of the `taxiout.py` base model (copy mixture, per-airport bl
 - Not adopted: a hand-fitted Rome rule for no-NM LIRF flights 15-30 h late (looks large on the 2025 holdout, 356.6 -> 333.2,
   but rests on 7 holdout and 8 training rows and would touch 4 ranking flights); ADS-B (about 2.1 TB for 2025, no ground
   coverage at the airports where error is largest).
+- `quirky-honey_v6.parquet`: v5 plus the cross-fitted stacking corrector (`stack.py submit`), local holdout 344.9 s (Jan 352.1, Jul 339.0). Official leaderboard RMSE: 302.01 s (rank 130/233 on 2026-10-07).
