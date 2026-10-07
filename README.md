@@ -108,7 +108,8 @@ Did not work / not worth it:
 
 The ~60 departures over 3 h in Jan+Jul (mostly LIRF flights with no NM record) account for ~46% of the
 squared error, i.e. ~256 s of RMSE by themselves. Whatever is done to the other flights, the total
-cannot go much below that without a way to predict those rows.
+cannot go much below that without a way to predict those rows. (The LIRF no-NM specialist below predicts part of them
+better; see that section.)
 
 ## Submissions
 - `quirky-honey_v2.parquet` uploaded 2026-10-07 (PDT). 3 LightGBM members, two-stage copy mixture, NM-missing stage,
@@ -142,3 +143,29 @@ second stage on top of the `taxiout.py` base model (copy mixture, per-airport bl
   but rests on 7 holdout and 8 training rows and would touch 4 ranking flights); ADS-B (about 2.1 TB for 2025, no ground
   coverage at the airports where error is largest).
 - `quirky-honey_v6.parquet`: v5 plus the cross-fitted stacking corrector (`stack.py submit`), local holdout 344.9 s (Jan 352.1, Jul 339.0). Official leaderboard RMSE: 302.01 s (rank 130/233 on 2026-10-07).
+
+## LIRF no-NM specialist (`specialist.py`)
+`python specialist.py validate --data DIR [--scope lirf|other|all]` and
+`python specialist.py apply --data DIR --base quirky-honey_v6.parquet --out OUT.parquet`.
+
+- Scope: departures at LIRF without a Network Manager flight record (`FLIGHT_ID_mvt` missing): about 1,490 rows in 2025,
+  397 in the Jan+Jul holdout, 383 in the ranking set. They hold most multi-hour and one-day-shift labels, and our base
+  RMSE on them was 5640 s (29.6% of the holdout squared error).
+- Model: CatBoost (depth 5, 1000 trees, learning rate 0.04, L2 10, mean of 5 seeds) fitted on those rows only, with the
+  target `y - max(0, MVT - SCHED)`; prediction is `max(0, MVT - SCHED)` plus the learned residual, floored at 30 s. The
+  hyperparameters were taken from the public description and not tuned here.
+- Sanity cap at `max(gap, 88,500 s)`: in 2025 training a no-NM LIRF label is either close to the schedule gap or in the
+  one-day-shift cluster (largest label 88,392 s), so a larger prediction is not supported by the data. It touches a few rows
+  and was not part of the leave-one-month-out run below.
+- Validation, leave-one-month-out over all 12 months of 2025 (the model for a month never sees that month): better than the
+  base in 12 of 12 months; scope RMSE on Jan+Jul 5640 -> 3555 (all 12 months 5572 -> 4001). On the whole Jan+Jul holdout
+  the base-only RMSE goes 352.2 -> 319.3 (Jan 357.3 -> 346.2, Jul 348.1 -> 295.9). These are local numbers; they are not
+  an official score.
+- Not adopted: the same specialist on no-NM rows at the other airports is worse (RMSE 1153 -> 1748 over 12 months; whole
+  holdout 352.2 -> 373.1), so it is limited to LIRF. Applying it to every no-NM row gave 335.1, worse than LIRF only.
+- The idea (a separate specialist for unmatched LIRF rows on a MVT-SCHED baseline) comes from the public repository
+  Phoenix-Ops-LTD/prc2026-taxiout (GPLv3, team zestful-fountain), found by comparing their reported holdout error scopes with
+  ours. It is re-implemented here independently on our features, not copied.
+- `quirky-honey_v8.parquet` (v6 with the 383 LIRF no-NM ranking rows replaced) was rejected by the scorer with
+  `DAILY_LIMIT_REACHED` (5 of 5 uploads used that day), so it has no official score. The identical file was prepared as
+  `quirky-honey_v9.parquet` for upload after the quota reset.
