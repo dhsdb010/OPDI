@@ -122,6 +122,32 @@ def two_stage(Xtr, ytr, eq_tr, Xte, sched_gap_te, rounds_reg=700, rounds_clf=300
     return mix, p, r
 
 
+CELLS = {"apst_rwy": ["ap", "stand", "rwy"], "apst": ["ap", "stand"], "aprwy": ["ap", "rwy"]}
+
+
+def cell_stats(K_fit, y_fit, K_apply):
+    """Typical taxi time per (airport, stand, runway) cell and coarser cells: median, P10, P90, mean, count.
+    Fitted on clean taxi times only (not schedule copies), clipped to [30, 7200]."""
+    out = pd.DataFrame(index=K_apply.index)
+    fit = K_fit.assign(y=np.asarray(y_fit, dtype=float))
+    for name, cols in CELLS.items():
+        g = fit.groupby(cols)["y"].agg(med="median", p10=lambda v: v.quantile(.1),
+                                       p90=lambda v: v.quantile(.9), mean="mean", n="size")
+        g.columns = [f"{name}_{c}" for c in g.columns]
+        out = out.join(K_apply[cols].join(g, on=cols).drop(columns=cols))
+    return out
+
+
+def cell_oof(K, y, usable, fold):
+    """Out-of-fold cell stats for training rows (fold = month), so a row never sees its own label."""
+    parts = []
+    for f in sorted(set(fold)):
+        te = (fold == f)
+        fit = ~te & usable
+        parts.append(cell_stats(K[fit], y[fit], K[te]))
+    return pd.concat(parts).loc[K.index]
+
+
 def nm_stage(d_tr, y_tr, cp_tr, d_te):
     """Dedicated mixture for departures with no NM flight record (~1% of rows, but they hold
     ~90% of the multi-hour outliers, almost all at LIRF). Small model on a few columns only.
@@ -181,6 +207,17 @@ def main():
     print(f"train {int(tr.sum()):,}  valid {int(va.sum()):,}  copy rate {eq[tr].mean():.3%}")
     print(f"mean-prediction RMSE {rmse(y[va], y[tr].mean()):.1f}s")
 
+    K = pd.DataFrame({"ap": d["ADEP_mvt"].values, "stand": d["STAND_mvt"].astype(str).values,
+                      "rwy": d["RUNWAY_mvt"].astype(str).values})
+    yc = y.clip(30, 7200)
+    usable = ok & ~eq
+    Ftr = cell_oof(K[tr], yc[tr].values, usable[tr].values, month[tr].values)
+    Fva = cell_stats(K[tr][usable[tr].values], yc[tr][usable[tr]].values, K[va])
+    Xbase = X
+    X = pd.concat([Xbase, pd.concat([Ftr, Fva]).reindex(Xbase.index)], axis=1)
+    print(f"cell features: {Ftr.shape[1]} columns; stand/runway cell hit rate on valid "
+          f"{Fva['apst_rwy_n'].notna().mean():.1%}")
+
     ps, _ = single(X[tr].copy(), y[tr], X[va].copy())
     print(f"single regressor, all rows        RMSE {rmse(y[va], ps):.1f}s")
     mix, p, r = two_stage(X[tr].copy(), y[tr].reset_index(drop=True), eq[tr].reset_index(drop=True),
@@ -218,7 +255,13 @@ def main():
     rd = rank[rmask]
     rgap = (rd["MVT_TIME_UTC_mvt"] - rd["SCHED_TIME_UTC_mvt"]).dt.total_seconds().fillna(y.median()).values
     full = ok
-    pr, _, _ = two_stage(X[full].copy(), y[full].reset_index(drop=True), eq[full].reset_index(drop=True),
+    Kr = pd.DataFrame({"ap": rd["ADEP_mvt"].values, "stand": rd["STAND_mvt"].astype(str).values,
+                       "rwy": rd["RUNWAY_mvt"].astype(str).values})
+    Fall = cell_oof(K[full], yc[full].values, usable[full].values, month[full].values)
+    Xfull = pd.concat([Xbase[full], Fall.reindex(Xbase[full].index)], axis=1)
+    Fr = cell_stats(K[usable], yc[usable].values, Kr)
+    Xr = pd.concat([Xr.reset_index(drop=True), Fr.reset_index(drop=True)], axis=1)
+    pr, _, _ = two_stage(Xfull.copy(), y[full].reset_index(drop=True), eq[full].reset_index(drop=True),
                          Xr.reset_index(drop=True), rgap)
     rnm = rd["FLIGHT_ID_mvt"].isna().values
     if rnm.any():
