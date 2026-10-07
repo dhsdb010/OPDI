@@ -24,12 +24,20 @@ def load(path_or_glob):
     return df
 
 
+EPOCH = pd.Timestamp("1970-01-01")
+
+
+def secs(s):
+    """Seconds since epoch, independent of the datetime unit (pandas 3 stores microseconds)."""
+    return (s - EPOCH).dt.total_seconds()
+
+
 def add_congestion(df):
     """Traffic counts around each movement at its airport. Uses only times that are
     present in ranking data (MVT_TIME for all rows, BLOCK_TIME only for ARR)."""
     df = df.copy()
     df["AIRPORT"] = np.where(df["PHASE_mvt"] == "DEP", df["ADEP_mvt"], df["ADES_mvt"])
-    df["_t"] = df["MVT_TIME_UTC_mvt"].astype("int64") // 10**9
+    df["_t"] = secs(df["MVT_TIME_UTC_mvt"])
     for ph, name in [("DEP", "dep"), ("ARR", "arr")]:
         for w in (5, 15, 30, 60):
             df[f"n_{name}_{w}m"] = np.nan
@@ -52,8 +60,62 @@ def add_congestion(df):
     return df.drop(columns="_t")
 
 
+def add_queue(d):
+    """Surface-queue features at the estimated push-back time.
+
+    Block times of other departures are blanked in the ranking set, so push-back is proxied by
+    AOBT_3 (NM actual off-block; falls back to takeoff - 15 min). Arrivals keep their real
+    in-block time. For each departure i with push time p_i and takeoff m_i:
+      q_dep_surf   departures already pushed (p_j <= p_i) but not yet airborne (m_j > p_i)
+      q_rwy_surf   the same, on i's runway
+      q_arr_surf   arrivals landed and not yet in-block at p_i
+      q_rwy_ahead  takeoffs on i's runway between p_i and m_i (what i waited behind)
+      q_rwy_prev / q_rwy_next  gap to previous / next takeoff on the runway
+    """
+    m = secs(d["MVT_TIME_UTC_mvt"]).values
+    a = secs(d["AOBT_3_flt"]).values if "AOBT_3_flt" in d else np.full(len(d), np.nan)
+    have = np.isfinite(a)
+    p = np.where(have, a, m - 900.0)
+    p = np.minimum(p, m)  # never after takeoff
+    b = secs(d["BLOCK_TIME_UTC_mvt"]).values
+    arr = (d["PHASE_mvt"] == "ARR").values
+    dep = ~arr
+    ap = d["AIRPORT"].values
+    rw = d["RUNWAY_mvt"].astype(str).values
+    out = {k: np.full(len(d), np.nan) for k in
+           ["q_dep_surf", "q_rwy_surf", "q_arr_surf", "q_rwy_ahead", "q_rwy_prev", "q_rwy_next"]}
+    out["q_push_proxied"] = (~have).astype(float)
+    for code in np.unique(ap):
+        ia = np.where(ap == code)[0]
+        idep = ia[dep[ia]]
+        iarr = ia[arr[ia]]
+        P, M = np.sort(p[idep]), np.sort(m[idep])
+        x = p[idep]
+        out["q_dep_surf"][idep] = np.searchsorted(P, x, "right") - np.searchsorted(M, x, "right") - (x < m[idep])
+        if len(iarr):
+            land = np.sort(m[iarr])
+            inb = np.sort(np.where(np.isfinite(b[iarr]), b[iarr], m[iarr] + 300.0))
+            out["q_arr_surf"][idep] = np.searchsorted(land, x, "right") - np.searchsorted(inb, x, "right")
+        for r in np.unique(rw[idep]):
+            ir = idep[rw[idep] == r]
+            Pr, Mr = np.sort(p[ir]), np.sort(m[ir])
+            xr = p[ir]
+            out["q_rwy_surf"][ir] = np.searchsorted(Pr, xr, "right") - np.searchsorted(Mr, xr, "right") - (xr < m[ir])
+            lo = np.searchsorted(Mr, xr, "right")
+            hi = np.searchsorted(Mr, m[ir], "left")
+            out["q_rwy_ahead"][ir] = np.maximum(hi - lo, 0)
+            k = np.searchsorted(Mr, m[ir], "left")
+            prev = np.where(k > 0, Mr[np.maximum(k - 1, 0)], np.nan)
+            nxt_i = np.searchsorted(Mr, m[ir], "right")
+            nxt = np.where(nxt_i < len(Mr), Mr[np.minimum(nxt_i, len(Mr) - 1)], np.nan)
+            out["q_rwy_prev"][ir] = m[ir] - prev
+            out["q_rwy_next"][ir] = nxt - m[ir]
+    return pd.DataFrame(out, index=d.index)
+
+
 def features(df):
     d = add_congestion(df)
+    Q = add_queue(d)
     t = d["MVT_TIME_UTC_mvt"]
     X = pd.DataFrame(index=d.index)
     X["hour"] = t.dt.hour + t.dt.minute / 60
@@ -80,6 +142,7 @@ def features(df):
             X["mvt_minus_" + c] = (t - d[c]).dt.total_seconds() / 60
     if "ARVT_3_flt" in d:
         X["flight_min"] = (d["ARVT_3_flt"] - d["AOBT_3_flt"]).dt.total_seconds() / 60
+    X = pd.concat([X, Q], axis=1)
     for c in CATS:
         X[c] = X[c].astype("string").fillna("NA").astype("category")
     return X

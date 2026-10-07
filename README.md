@@ -16,6 +16,8 @@ Taxi-out time prediction for 10 European airports (EUROCONTROL PRC Data Challeng
   multi-hour outliers, so they get their own small mixture, applied where `MVT - SCHED > 1 h`.
 - Cell statistics: median/P10/P90/mean/count of clean taxi times per (airport, stand, runway) and coarser
   cells, out-of-fold by month for training rows.
+- Queue features: departures/arrivals on the surface and same-runway queue at the estimated push-back
+  (`AOBT_3`, fallback takeoff - 15 min), takeoffs ahead on the runway, gaps to neighbouring takeoffs.
 - Validation: train on 2025 months other than Jan and Jul, score RMSE on Jan + Jul 2025,
   outliers kept (dropping them makes the score look much better than it is).
 
@@ -26,6 +28,7 @@ Taxi-out time prediction for 10 European airports (EUROCONTROL PRC Data Challeng
 | Two-stage mixture | 420 |
 | + NM-missing stage | 384 |
 | + stand/runway cell statistics | 381 |
+| + congestion window fix, surface-queue features | 378 |
 
 ```bash
 pip install pandas pyarrow lightgbm scikit-learn
