@@ -50,6 +50,9 @@ Taxi-out time prediction for 10 European airports (EUROCONTROL PRC Data Challeng
 | + LOBT-window clip of predictions | 355 |
 | + IEM METAR weather features | 354 |
 | + per-airport regressors blended 50/50 with the global one (3 members) | 352 |
+| + cross-fitted stacking corrector (`stack.py`, base 352.2 -> 348.0) | 348 |
+| + neighbour future/relative delay, delayed-flight copy rate, EUROCONTROL daily series in the corrector | 346.6 |
+| + corrector ensemble (global LightGBM, per-airport LightGBM, CatBoost, averaged) | 344.9 |
 
 ```bash
 pip install pandas pyarrow lightgbm scikit-learn
@@ -103,3 +106,27 @@ cannot go much below that without a way to predict those rows.
 - `quirky-honey_v2.parquet` official leaderboard RMSE: 347.24 s (rank 159/233 when checked on 2026-10-07; used as a sanity check only).
 - `quirky-honey_v3.parquet`: v2 plus the LOBT clip and METAR weather features; local holdout RMSE 353.3 s (3 LightGBM members, Jan+Jul 2025 held out, outliers kept). Official leaderboard RMSE: 314.14 s (rank 140/233 on 2026-10-07).
 - `quirky-honey_v5.parquet`: v3 plus the copy-impossible rule and per-airport blend; local holdout RMSE 352.1 s (Jan 357.4, Jul 347.8). Official leaderboard RMSE: 311.85 s (rank 138/233 on 2026-10-07). (v4, the same without the per-airport blend, was not uploaded.)
+
+## Stacking corrector (`stack.py`)
+`python stack.py validate --data DIR [--variants] [--ensemble]` and `python stack.py submit --data DIR` implement a
+second stage on top of the `taxiout.py` base model (copy mixture, per-airport blend, copy-impossible rule, NM-missing stage).
+
+- Out-of-block base predictions: the training months are split into 2-month blocks and the base is retrained without the
+  block it predicts, so the corrector never sees the base's own training error. Validation uses 5 blocks over the 10
+  non-Jan/Jul months, held-out Jan/Jul predicted by a base trained on those 10 months; the submission uses 6 blocks over
+  all 12 months and a base trained on all of 2025 for the ranking rows.
+- The corrector learns the clipped residual (`y - base`) on normal flights (taxi time up to 3 h) whose base prediction is not a
+  tail bet (<= 7200 s). Tail rows keep the base prediction. Inputs: all base features, the base prediction, P(copy), the normal
+  regressor, distances to both LOBT window edges, plus the extra groups below. The result is projected back onto the LOBT window.
+- Extra inputs, each measured on both months: neighbour delay in the next 20/60 min (future windows) and the flight's own
+  proxy minus its neighbours'; copy rate among delayed flights (takeoff > 1 h after SCHED) per airport/operator/NM-or-not,
+  smoothed toward the airport rate and computed without the row's own month; EUROCONTROL daily airport series
+  (regulated and off-slot share, pre-departure delay per flight; see `docs/external_data.md`).
+- Held-out Jan+Jul 2025, outliers kept: base 352.2 (Jan 357.3, Jul 348.1); corrector 348.0 (354.2, 342.8); + extra inputs
+  346.6 (353.6, 340.8); average of global LightGBM, per-airport LightGBM and CatBoost correctors 344.9 (352.1, 339.0).
+- Ideas credited to the public repository EnioAguiar/prc-taxiout-2026 (GPLv3), re-implemented here from their written
+  description and not copied: cross-fitted corrector, delayed-flight copy rate, future/relative neighbour windows, averaging
+  global/per-airport/CatBoost models.
+- Not adopted: a hand-fitted Rome rule for no-NM LIRF flights 15-30 h late (looks large on the 2025 holdout, 356.6 -> 333.2,
+  but rests on 7 holdout and 8 training rows and would touch 4 ranking flights); ADS-B (about 2.1 TB for 2025, no ground
+  coverage at the airports where error is largest).
