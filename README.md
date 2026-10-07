@@ -61,6 +61,14 @@ Did not work / not worth it:
   match, 77% get ground time since the same aircraft's previous landing there): on a January-only check
   (train days 1-21, test 22-31) RMSE 197.2 s without vs 197.3 s with the feature. The flight-plan and queue
   features already carry that information, so the other months were not downloaded.
+- Regressor variants on normal (non-copy) flights, Jan+Jul 2025, RMSE 234.4 s baseline: residual target around the
+  cell median 234.3, lr 0.03 / 255 leaves / 1400 rounds 234.4, arrival taxi-in times near push-back plus
+  operator-level recent lateness 234.5 (Jan slightly worse). The model is saturated on the current inputs.
+- Other label regimes: ~21% of departures have |BLOCK - AOBT_3| <= 60 s (EOBT/LOBT/IOBT copies: 11-12%). A
+  separate AOBT_3-copy mixture is hard to learn (classifier AUC 0.72): normal-flight RMSE 235.0 vs 234.5; a
+  50/50 blend with the baseline reached 233.8, which is just an ensemble effect. No repeated default taxi times.
+- CatBoost copy classifier averaged into P(copy): AUC 0.887 -> 0.895, but holdout RMSE 359.1 -> 362.5
+  (Jan 361.1 -> 363.0, Jul 357.4 -> 362.2), so not kept. Better AUC did not mean a better mixture.
 - Shrinking or capping extreme predictions: worse. Scaling them up 1.25x looked better but only through
   luck on a handful of July rows, so it was not kept.
 
