@@ -188,6 +188,14 @@ def add_weather(d, lag_s=600):
     W = pd.concat(parts).reindex(range(len(d)))
     W.index = d.index
     W.columns = ["wx_" + c if not c.startswith(("wx_", "obs_")) else c for c in W.columns]
+    if os.environ.get("PRC_WIND"):
+        num = d["RUNWAY_mvt"].astype(str).str.extract(r"(\d{1,2})")[0].astype(float)
+        hdg = (num * 10.0).values  # runway designator x 10 ~ magnetic heading in degrees
+        rel = np.radians(W["wx_drct"].values - hdg)
+        spd = W["wx_sknt"].values
+        W["wx_head"] = spd * np.cos(rel)            # + headwind on the departure runway
+        W["wx_cross"] = np.abs(spd * np.sin(rel))
+        W["wx_tail"] = (W["wx_head"] < -3).astype(float)
     return W
 
 
@@ -272,7 +280,7 @@ def catboost_reg(Xtr, ytr, Xte, iters=600):
 
 
 def two_stage(Xtr, ytr, eq_tr, Xte, sched_gap_te, rounds_reg=700, rounds_clf=300, seeds=1,
-              use_cat=False, members=None):
+              use_cat=False, copy_ok=None, per_airport=False, members=None):
     """Mixture of two regimes (see README).
 
     eq = |BLOCK - SCHED| <= 60 s, i.e. the off-block stamp is a copy of the schedule. For those
@@ -296,9 +304,24 @@ def two_stage(Xtr, ytr, eq_tr, Xte, sched_gap_te, rounds_reg=700, rounds_clf=300
         print(f"  member {i} done", flush=True)
     p = np.mean(ps, axis=0)
     r_lgb = np.mean(rs, axis=0)
+    if per_airport:
+        r_pa = np.full(len(Xte), np.nan)
+        apx = Xtr["AIRPORT"].astype(str).values; apt = Xte["AIRPORT"].astype(str).values
+        for a_ in np.unique(apt):
+            tr_a = n & (apx == a_)
+            if tr_a.sum() < 500:
+                continue
+            Pa = dict(member_params(0), num_leaves=63, min_data_in_leaf=100)
+            ma = lgb.train({**Pa, "objective": "regression"}, lgb.Dataset(Xtr[tr_a], ytr[tr_a].clip(30, 7200)), 600)
+            r_pa[apt == a_] = ma.predict(Xte[apt == a_])
+        if members is not None:
+            members.update(r_pa=r_pa, r_glob=r_lgb.copy())
+        r_lgb = np.where(np.isnan(r_pa), r_lgb, 0.5 * r_lgb + 0.5 * r_pa)
     r_cat = catboost_reg(Xtr[n], yn, Xte) if use_cat else None
     if members is not None:
         members.update(ps=ps, rs=rs, r_cat=r_cat)
+    if copy_ok is not None:
+        p = p * copy_ok  # a copy that would fall outside the LOBT window is impossible
     r = r_lgb if r_cat is None else 0.5 * r_lgb + 0.5 * r_cat
     return p * sched_gap_te + (1 - p) * r, p, r
 
@@ -377,6 +400,14 @@ def lobt_clip(pred, d):
     return pred
 
 
+def copy_feasible(d):
+    """1 where a schedule copy (taxi = MVT - SCHED) is possible, 0 where it would violate the LOBT window."""
+    ml = (d["MVT_TIME_UTC_mvt"] - d["LOBT_flt"]).dt.total_seconds().values
+    g = (d["MVT_TIME_UTC_mvt"] - d["SCHED_TIME_UTC_mvt"]).dt.total_seconds().values
+    bad = np.isfinite(ml) & np.isfinite(g) & (np.abs(g - ml) > LOBT_WINDOW)
+    return (~bad).astype(float)
+
+
 def nm_frame(d):
     t = d["MVT_TIME_UTC_mvt"]
     ap = d["ADEP_mvt"]
@@ -400,6 +431,7 @@ def main():
     ap.add_argument("--data", required=True)
     ap.add_argument("--no-submit", action="store_true")
     ap.add_argument("--seeds", type=int, default=3, help="LightGBM members")
+    ap.add_argument("--per-airport", action="store_true", help="blend per-airport regressors with the global one")
     ap.add_argument("--cat", action="store_true", help="add a CatBoost regressor member")
     ap.add_argument("--dump", help="write validation predictions to this parquet")
     ap.add_argument("--out", default="submission.parquet")
@@ -442,7 +474,7 @@ def main():
     print(f"single regressor, all rows        RMSE {rmse(y[va], ps):.1f}s")
     mem = {}
     mix, p, r = two_stage(X[tr].copy(), y[tr].reset_index(drop=True), eq[tr].reset_index(drop=True),
-                          X[va].copy(), gap[va].values, seeds=a.seeds, use_cat=a.cat, members=mem)
+                          X[va].copy(), gap[va].values, seeds=a.seeds, use_cat=a.cat, copy_ok=copy_feasible(d.reset_index(drop=True)[va.values]), per_airport=a.per_airport, members=mem)
     g_va = gap[va].values
     for i, ri in enumerate(mem["rs"]):
         print(f"  member {i} alone (plain mixture)        RMSE {rmse(y[va], mem['ps'][i] * g_va + (1 - mem['ps'][i]) * ri):.1f}s")
@@ -497,7 +529,7 @@ def main():
     Fr = pd.concat([cell_stats(K[usable], yc[usable].values, Kr), copy_rates(K[full], eq[full].values, Kr)], axis=1)
     Xr = pd.concat([Xr.reset_index(drop=True), Fr.reset_index(drop=True)], axis=1)
     pr, _, _ = two_stage(Xfull.copy(), y[full].reset_index(drop=True), eq[full].reset_index(drop=True),
-                         Xr.reset_index(drop=True), rgap, seeds=a.seeds, use_cat=a.cat)
+                         Xr.reset_index(drop=True), rgap, seeds=a.seeds, use_cat=a.cat, copy_ok=copy_feasible(rd), per_airport=a.per_airport)
     rnm = rd["FLIGHT_ID_mvt"].isna().values
     if rnm.any():
         fn = ok & nm
