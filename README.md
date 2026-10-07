@@ -23,6 +23,12 @@ Taxi-out time prediction for 10 European airports (EUROCONTROL PRC Data Challeng
 - Copy detection: explicit SCHED minus AOBT_3/EOBT/LOBT/IOBT differences, SCHED minute-mod-5 and seconds, and
   out-of-fold copy rates per (airport, stand), (airport, operator), (airport, runway). Improves both months
   (Jan 364.4 -> 361.1, Jul 385.8 -> 357.4); normal flights 275.7 -> 271.4. Much of the July gain is on tail rows.
+- LOBT window: in 2025 all 2.06M matched departures have |BLOCK - LOBT| <= 3606 s, so predictions are clipped to
+  taxi in [MVT - LOBT - 3606, MVT - LOBT + 3606] (rule from the training data, not tuned on the holdout).
+  Jan 361.1 -> 360.7, Jul 357.4 -> 350.2.
+- Weather: IEM ASOS METAR (https://mesonet.agron.iastate.edu/request/download.phtml, 10 airports, 2025-01-01 to
+  2026-07-31, ~31 MB, saved to `opdi/metar/<ICAO>.csv`, not in the repo). Latest observation >=10 min before takeoff, rolling
+  freezing/snow/precip/fog flags, temperature trend. Jan 360.7 -> 359.6, Jul 350.2 -> 349.0 (1 LightGBM member).
 - Ensemble option: `--seeds N --cat` averages N LightGBM members plus a CatBoost regressor.
 - Validation: train on 2025 months other than Jan and Jul, score RMSE on Jan + Jul 2025,
   outliers kept (dropping them makes the score look much better than it is).
@@ -37,6 +43,8 @@ Taxi-out time prediction for 10 European airports (EUROCONTROL PRC Data Challeng
 | + congestion window fix, surface-queue features | 378 |
 | + neighbour taxi-level features (recent takeoffs' takeoff - AOBT_3) | 376 |
 | + schedule-copy features (SCHED vs AOBT_3/EOBT/LOBT/IOBT, round-time flags, OOF copy rates per stand/operator/runway) | 359 |
+| + LOBT-window clip of predictions | 355 |
+| + IEM METAR weather features | 354 |
 
 ```bash
 pip install pandas pyarrow lightgbm scikit-learn
@@ -69,6 +77,8 @@ Did not work / not worth it:
   50/50 blend with the baseline reached 233.8, which is just an ensemble effect. No repeated default taxi times.
 - CatBoost copy classifier averaged into P(copy): AUC 0.887 -> 0.895, but holdout RMSE 359.1 -> 362.5
   (Jan 361.1 -> 363.0, Jul 357.4 -> 362.2), so not kept. Better AUC did not mean a better mixture.
+- ADS-B ground traces (adsb.lol, ~2.1 TB for 2025) and OPDI flight events (221 MB per 10 days, airborne milestones
+  only as far as documented) were judged infeasible and not downloaded.
 - Shrinking or capping extreme predictions: worse. Scaling them up 1.25x looked better but only through
   luck on a handful of July rows, so it was not kept.
 
@@ -80,3 +90,5 @@ cannot go much below that without a way to predict those rows.
 - `quirky-honey_v2.parquet` uploaded 2026-10-07 (PDT). 3 LightGBM members, two-stage copy mixture, NM-missing stage,
   stand/runway cell stats, queue and neighbour features, schedule-copy features. Local holdout RMSE (Jan+Jul 2025,
   outliers kept): 359.6 s. The official score is not used to tune the model.
+- `quirky-honey_v2.parquet` official leaderboard RMSE: 347.24 s (rank 159/233 when checked on 2026-10-07; used as a sanity check only).
+- `quirky-honey_v3.parquet`: v2 plus the LOBT clip and METAR weather features; local holdout RMSE 353.3 s (3 LightGBM members, Jan+Jul 2025 held out, outliers kept). Official score to be added after upload.

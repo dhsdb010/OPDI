@@ -137,9 +137,64 @@ def add_queue(d):
     return pd.DataFrame(out, index=d.index)
 
 
+METAR_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "opdi", "metar")
+_PRECIP = ["RA", "SN", "DZ", "GR", "GS", "PL", "SG", "IC", "SH"]
+
+
+def load_metar(path=None):
+    """IEM ASOS METAR/SPECI per airport. Adds rolling 3 h precipitation / freezing / snow counts and temperature trend."""
+    path = path or METAR_DIR
+    out = {}
+    for f in sorted(glob.glob(os.path.join(path, "*.csv"))):
+        m = pd.read_csv(f, na_values=["null", "M"], dtype={"wxcodes": "string"})
+        m["valid"] = pd.to_datetime(m["valid"])
+        m = m.sort_values("valid").drop_duplicates("valid").reset_index(drop=True)
+        wx = m["wxcodes"].fillna("")
+        m["wx_fz"] = wx.str.contains("FZ").astype(float)
+        m["wx_sn"] = wx.str.contains("SN|SG|PL|GS").astype(float)
+        m["wx_precip"] = wx.str.contains("|".join(_PRECIP)).astype(float)
+        m["wx_fog"] = wx.str.contains("FG").astype(float)
+        m["wx_ts"] = wx.str.contains("TS").astype(float)
+        m["wx_heavy"] = wx.str.contains(r"\+").astype(float)
+        m["spread"] = m["tmpf"] - m["dwpf"]
+        sky = m[["skyl1", "skyl2"]].where(m[["skyc1", "skyc2"]].isin(["BKN", "OVC", "VV"]).values)
+        m["ceil"] = sky.min(axis=1)
+        for c in ["wx_fz", "wx_sn", "wx_precip", "wx_fog"]:
+            m[c + "_6obs"] = m[c].rolling(6, min_periods=1).sum()
+        m["tmp_d3h"] = m["tmpf"] - m["tmpf"].shift(6)
+        m["vsby_min6"] = m["vsby"].rolling(6, min_periods=1).min()
+        m["gust_max6"] = m["gust"].rolling(6, min_periods=1).max()
+        m["obs_time"] = m["valid"]
+        out[os.path.basename(f)[:4]] = m.drop(columns=["station", "wxcodes", "skyc1", "skyc2", "skyl1", "skyl2"], errors="ignore")
+    return out
+
+
+def add_weather(d, lag_s=600):
+    """Latest METAR at least lag_s before the movement, for the movement's airport (departure or arrival)."""
+    met = {} if os.environ.get("PRC_NO_METAR") else load_metar()
+    if not met:
+        return pd.DataFrame(index=d.index)
+    t = (d["MVT_TIME_UTC_mvt"] - pd.Timedelta(seconds=lag_s)).values
+    keys = d["AIRPORT"].astype(str).values
+    parts = []
+    for ap, m in met.items():
+        idx = np.where(keys == ap)[0]
+        if not len(idx):
+            continue
+        left = pd.DataFrame({"t": t[idx], "pos": idx}).sort_values("t")
+        r = pd.merge_asof(left, m.drop(columns=["valid"]).assign(t=m["valid"].values), on="t", direction="backward")
+        r["obs_age_min"] = (r["t"] - r["obs_time"]).dt.total_seconds() / 60
+        parts.append(r.drop(columns=["t", "obs_time"]).set_index("pos"))
+    W = pd.concat(parts).reindex(range(len(d)))
+    W.index = d.index
+    W.columns = ["wx_" + c if not c.startswith(("wx_", "obs_")) else c for c in W.columns]
+    return W
+
+
 def features(df):
     d = add_congestion(df)
     Q = add_queue(d)
+    Wx = add_weather(d)
     t = d["MVT_TIME_UTC_mvt"]
     X = pd.DataFrame(index=d.index)
     X["hour"] = t.dt.hour + t.dt.minute / 60
@@ -176,7 +231,7 @@ def features(df):
     X["mvt_sec"] = t.dt.second
     if "ARVT_3_flt" in d:
         X["flight_min"] = (d["ARVT_3_flt"] - d["AOBT_3_flt"]).dt.total_seconds() / 60
-    X = pd.concat([X, Q], axis=1)
+    X = pd.concat([X, Q, Wx], axis=1)
     for c in CATS:
         X[c] = X[c].astype("string").fillna("NA").astype("category")
     return X
@@ -309,6 +364,19 @@ def nm_stage(d_tr, y_tr, cp_tr, d_te):
     return p * d_te["gap"].values + (1 - p) * reg.predict(f(d_te))
 
 
+LOBT_WINDOW = 3606.0  # in 2025 every matched departure (2.06M rows) has |BLOCK - LOBT| <= 3606 s
+
+
+def lobt_clip(pred, d):
+    """Official block times lie within +-1 h of the NM last off-block time, so
+    taxi time = MVT - BLOCK must lie in [MVT - LOBT - W, MVT - LOBT + W]. Clip predictions to it."""
+    ml = ((d["MVT_TIME_UTC_mvt"] - d["LOBT_flt"]).dt.total_seconds()).values
+    pred = np.asarray(pred, dtype=float).copy()
+    has = np.isfinite(ml)
+    pred[has] = np.clip(pred[has], ml[has] - LOBT_WINDOW, ml[has] + LOBT_WINDOW)
+    return pred
+
+
 def nm_frame(d):
     t = d["MVT_TIME_UTC_mvt"]
     ap = d["ADEP_mvt"]
@@ -395,7 +463,7 @@ def main():
     print(f"  hybrid (NM stage only where MVT-SCHED > 1h, {int(use.sum())} rows) RMSE {rmse(y[va], hyb):.1f}s")
     mix_all_nm = mix2
     print(f"  + NM stage on all NM-missing rows ({int(tn.sum()):,} train rows, {int(vn.sum()):,} valid rows) RMSE {rmse(y[va], mix2):.1f}s")
-    mix = hyb
+    mix = lobt_clip(hyb, d.reset_index(drop=True)[va.values])
     if a.dump:
         vv = d.reset_index(drop=True)[va.values]
         pd.DataFrame({"mvt_id": vv["MVT_ID_mvt"].values, "ap": vv["ADEP_mvt"].values, "flight": vv["FLIGHT_mvt"].values,
@@ -437,6 +505,7 @@ def main():
                        eq[fn].reset_index(drop=True), nm_frame(rd[rnm]).reset_index(drop=True))
         use = rgap[rnm] > 3600
         pr[np.where(rnm)[0][use]] = nmp[use]
+    pr = lobt_clip(pr, rd)
     sub = pd.read_parquet(os.path.join(a.data, "submitting.parquet"))
     pm = pd.Series(np.clip(pr, 30, None), index=rd["MVT_ID_mvt"].values)
     sub["TAXITIME_SEC_mvt"] = sub["MVT_ID_mvt"].map(pm).fillna(y.median()).astype(float)
