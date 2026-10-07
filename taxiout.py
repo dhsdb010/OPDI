@@ -85,29 +85,75 @@ def features(df):
     return X
 
 
-def fit_predict(Xtr, ytr, Xte, rounds=2000, yva=None, Xva=None):
-    # align categories across frames
+def align_cats(*frames):
     for c in CATS:
-        cats = pd.api.types.union_categoricals([Xtr[c], Xte[c]]).categories
-        Xtr[c] = pd.Categorical(Xtr[c].astype(str), categories=cats)
-        Xte[c] = pd.Categorical(Xte[c].astype(str), categories=cats)
-    p = dict(objective="regression", learning_rate=0.05, num_leaves=127, min_data_in_leaf=50,
-             feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=5,
-             cat_smooth=20, cat_l2=10, max_cat_to_onehot=8, verbose=-1, num_threads=8)
-    dtr = lgb.Dataset(Xtr, ytr)
-    cb = []
-    valid = []
-    if yva is not None:
-        valid = [lgb.Dataset(Xte, yva, reference=dtr)]
-        cb = [lgb.early_stopping(100), lgb.log_evaluation(100)]
-    m = lgb.train({**p, "metric": "rmse"}, dtr, rounds, valid_sets=valid, callbacks=cb)
-    return m, m.predict(Xte, num_iteration=m.best_iteration or None)
+        cats = pd.api.types.union_categoricals([f[c].astype(str).astype("category") for f in frames]).categories
+        for f in frames:
+            f[c] = pd.Categorical(f[c].astype(str), categories=cats)
 
 
-def clean_train(df):
-    d = df[df["PHASE_mvt"] == "DEP"].copy()
-    d = d[d["TAXITIME_SEC_mvt"].between(60, 7200)]  # drop obviously broken labels
-    return d
+PARAMS = dict(learning_rate=0.05, num_leaves=127, min_data_in_leaf=50, feature_fraction=0.8,
+              bagging_fraction=0.8, bagging_freq=1, lambda_l2=5, cat_smooth=20, cat_l2=10,
+              max_cat_to_onehot=8, verbose=-1, num_threads=8)
+
+
+def rmse(a, b):
+    return float(np.sqrt(np.mean((np.asarray(a) - np.asarray(b)) ** 2)))
+
+
+def two_stage(Xtr, ytr, eq_tr, Xte, sched_gap_te, rounds_reg=700, rounds_clf=300):
+    """Mixture of two regimes (see README).
+
+    eq = |BLOCK - SCHED| <= 60 s, i.e. the off-block stamp is a copy of the schedule. For those
+    flights the taxi time equals MVT - SCHED, which is known at prediction time.
+      stage 1: classifier p = P(eq)
+      stage 2: regressor on the normal flights only (target clipped)
+      prediction = p * (MVT - SCHED) + (1 - p) * regressor    (expectation, never argmax)
+    Also returns a single plain regressor trained on every row for comparison.
+    """
+    align_cats(Xtr, Xte)
+    clf = lgb.train({**PARAMS, "objective": "binary"}, lgb.Dataset(Xtr, eq_tr.astype(int)), rounds_clf)
+    p = clf.predict(Xte)
+    n = ~eq_tr.values
+    reg = lgb.train({**PARAMS, "objective": "regression"},
+                    lgb.Dataset(Xtr[n], ytr[n].clip(30, 7200)), rounds_reg)
+    r = reg.predict(Xte)
+    mix = p * sched_gap_te + (1 - p) * r
+    return mix, p, r
+
+
+def nm_stage(d_tr, y_tr, cp_tr, d_te):
+    """Dedicated mixture for departures with no NM flight record (~1% of rows, but they hold
+    ~90% of the multi-hour outliers, almost all at LIRF). Small model on a few columns only.
+    d_* have columns ap, gap (MVT - SCHED, s), hour, dow, month."""
+    cols = ["ap", "gap", "hour", "dow", "month"]
+    aps = sorted(set(d_tr["ap"]) | set(d_te["ap"]))
+    f = lambda d: d[cols].assign(ap=pd.Categorical(d["ap"], categories=aps))
+    P = dict(PARAMS, num_leaves=15, min_data_in_leaf=20, lambda_l2=10, learning_rate=0.05)
+    clf = lgb.train({**P, "objective": "binary"}, lgb.Dataset(f(d_tr), cp_tr.astype(int)), 200)
+    p = clf.predict(f(d_te))
+    n = ~cp_tr.values
+    reg = lgb.train({**P, "objective": "regression"},
+                    lgb.Dataset(f(d_tr)[n], y_tr[n].clip(30, 7200)), 200)
+    return p * d_te["gap"].values + (1 - p) * reg.predict(f(d_te))
+
+
+def nm_frame(d):
+    t = d["MVT_TIME_UTC_mvt"]
+    ap = d["ADEP_mvt"]
+    return pd.DataFrame({"ap": ap.values, "gap": (t - d["SCHED_TIME_UTC_mvt"]).dt.total_seconds().values,
+                         "hour": (t.dt.hour + t.dt.minute / 60).values, "dow": t.dt.dayofweek.values,
+                         "month": t.dt.month.values})
+
+
+def single(Xtr, ytr, Xte, rounds=700):
+    m = lgb.train({**PARAMS, "objective": "regression"}, lgb.Dataset(Xtr, ytr), rounds)
+    return m.predict(Xte), m
+
+
+def dep_frame(df, Xall):
+    mask = (df["PHASE_mvt"] == "DEP").values
+    return mask, Xall[mask]
 
 
 def main():
@@ -118,37 +164,74 @@ def main():
     a = ap.parse_args()
 
     train = load(os.path.join(a.data, "training_2025-*.parquet"))
-    # congestion needs ALL movements (arrivals too), so build features before filtering
-    Xall = features(train)
-    mask = (train["PHASE_mvt"] == "DEP") & train["TAXITIME_SEC_mvt"].between(60, 7200)
-    y = train.loc[mask, "TAXITIME_SEC_mvt"].astype(float)
-    X = Xall.loc[mask]
-    m = train.loc[mask, "MVT_TIME_UTC_mvt"].dt.month
+    Xall = features(train)  # congestion needs ALL movements (arrivals too)
+    mask, X = dep_frame(train, Xall)
+    d = train[mask]
+    y = d["TAXITIME_SEC_mvt"].astype(float).reset_index(drop=True)
+    X = X.reset_index(drop=True)
+    gap = (d["MVT_TIME_UTC_mvt"] - d["SCHED_TIME_UTC_mvt"]).dt.total_seconds().reset_index(drop=True)
+    eq = ((d["BLOCK_TIME_UTC_mvt"] - d["SCHED_TIME_UTC_mvt"]).abs().dt.total_seconds() <= 60).reset_index(drop=True)
+    month = d["MVT_TIME_UTC_mvt"].dt.month.reset_index(drop=True)
+    ok = y.notna() & gap.notna()  # every departure with a label counts, outliers included
 
-    # Validation mimics the ranking setup: hold out Jan and Jul, train on the rest
-    va = m.isin([1, 7])
-    print(f"train {int((~va).sum()):,}  valid {int(va.sum()):,}  baseline RMSE (mean) "
-          f"{np.sqrt(((y[va] - y[~va].mean())**2).mean()):.1f}s")
-    model, pred = fit_predict(X[~va].copy(), y[~va], X[va].copy(), yva=y[va])
-    rmse = np.sqrt(((pred - y[va]) ** 2).mean())
-    print(f"VALID RMSE (Jan+Jul 2025): {rmse:.1f}s")
-    imp = pd.Series(model.feature_importance("gain"), index=model.feature_name()).sort_values(ascending=False)
-    print(imp.head(15))
-    best = model.best_iteration or 500
+    # Validation mimics the ranking setup: hold out Jan and Jul, train on the rest.
+    # No early stopping on the held-out months, so the score is not tuned on them.
+    va = month.isin([1, 7]) & ok
+    tr = ~month.isin([1, 7]) & ok
+    print(f"train {int(tr.sum()):,}  valid {int(va.sum()):,}  copy rate {eq[tr].mean():.3%}")
+    print(f"mean-prediction RMSE {rmse(y[va], y[tr].mean()):.1f}s")
+
+    ps, _ = single(X[tr].copy(), y[tr], X[va].copy())
+    print(f"single regressor, all rows        RMSE {rmse(y[va], ps):.1f}s")
+    mix, p, r = two_stage(X[tr].copy(), y[tr].reset_index(drop=True), eq[tr].reset_index(drop=True),
+                          X[va].copy(), gap[va].values)
+    print(f"two-stage mixture                 RMSE {rmse(y[va], mix):.1f}s")
+    nm = d["FLIGHT_ID_mvt"].isna().reset_index(drop=True)
+    nmf = nm_frame(d.reset_index(drop=True))
+    tn, vn = tr & nm, va & nm
+    mix2 = mix.copy()
+    sel = nm[va].values
+    mix2[sel] = nm_stage(nmf[tn].reset_index(drop=True), y[tn].reset_index(drop=True),
+                         eq[tn].reset_index(drop=True), nmf[vn].reset_index(drop=True))
+    hyb = mix.copy()
+    gv = gap[va].values
+    use = sel & (gv > 3600)
+    hyb[use] = mix2[use]
+    print(f"  hybrid (NM stage only where MVT-SCHED > 1h, {int(use.sum())} rows) RMSE {rmse(y[va], hyb):.1f}s")
+    mix_all_nm = mix2
+    print(f"  + NM stage on all NM-missing rows ({int(tn.sum()):,} train rows, {int(vn.sum()):,} valid rows) RMSE {rmse(y[va], mix2):.1f}s")
+    mix = hyb
+    print(f"FINAL (mixture + hybrid NM stage)     RMSE {rmse(y[va], mix):.1f}s")
+    yv = y[va].values
+    big = yv > 10800
+    print(f"  RMSE on y<=3h {rmse(yv[~big], mix[~big]):.1f}s  ({(~big).sum():,} rows),"
+          f" y>3h {rmse(yv[big], mix[big]):.1f}s ({big.sum():,} rows); y>3h share of SSE "
+          f"{((yv[big]-mix[big])**2).sum()/((yv-mix)**2).sum():.1%}")
+    from sklearn.metrics import roc_auc_score
+    print(f"  copy classifier AUC {roc_auc_score(eq[va], p):.4f}")
 
     if a.no_submit:
         return
     rank = load(os.path.join(a.data, "ranking.parquet"))
     Xr = features(rank)
-    dep = (rank["PHASE_mvt"] == "DEP").values
-    # final model on all 2025 data with the iteration count found above
-    cats_X = X.copy()
-    mdl, pr = fit_predict(cats_X, y, Xr[dep].copy(), rounds=int(best * 1.1))
+    rmask, Xr = dep_frame(rank, Xr)
+    rd = rank[rmask]
+    rgap = (rd["MVT_TIME_UTC_mvt"] - rd["SCHED_TIME_UTC_mvt"]).dt.total_seconds().fillna(y.median()).values
+    full = ok
+    pr, _, _ = two_stage(X[full].copy(), y[full].reset_index(drop=True), eq[full].reset_index(drop=True),
+                         Xr.reset_index(drop=True), rgap)
+    rnm = rd["FLIGHT_ID_mvt"].isna().values
+    if rnm.any():
+        fn = ok & nm
+        nmp = nm_stage(nmf[fn].reset_index(drop=True), y[fn].reset_index(drop=True),
+                       eq[fn].reset_index(drop=True), nm_frame(rd[rnm]).reset_index(drop=True))
+        use = rgap[rnm] > 3600
+        pr[np.where(rnm)[0][use]] = nmp[use]
     sub = pd.read_parquet(os.path.join(a.data, "submitting.parquet"))
-    pm = pd.Series(np.clip(pr, 30, None), index=rank.loc[dep, "MVT_ID_mvt"].values)
+    pm = pd.Series(np.clip(pr, 30, None), index=rd["MVT_ID_mvt"].values)
     sub["TAXITIME_SEC_mvt"] = sub["MVT_ID_mvt"].map(pm).fillna(y.median()).astype(float)
     sub.to_parquet(a.out, index=False)
-    print("wrote", a.out, len(sub), "rows; missing mapped:", int(sub["MVT_ID_mvt"].isin(pm.index).sum()))
+    print("wrote", a.out, len(sub), "rows; matched:", int(sub["MVT_ID_mvt"].isin(pm.index).sum()))
 
 
 if __name__ == "__main__":
