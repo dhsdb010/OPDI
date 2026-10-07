@@ -53,6 +53,10 @@ Did not work / not worth it:
 - Ensembling (3 LightGBM + CatBoost): normal flights -1.4 s, total unchanged (379.2 vs 378.4), July slightly worse.
 - A per-bucket rule for the one-day-shift outliers (off-block date taken from the schedule): RMSE 378 -> 455.
   The buckets hold ~60 training rows, so the probabilities are noise.
+- OPDI flight list (flight_list_202501.parquet, matched by callsign + airport; 98.7% of January departures
+  match, 77% get ground time since the same aircraft's previous landing there): on a January-only check
+  (train days 1-21, test 22-31) RMSE 197.2 s without vs 197.3 s with the feature. The flight-plan and queue
+  features already carry that information, so the other months were not downloaded.
 - Shrinking or capping extreme predictions: worse. Scaling them up 1.25x looked better but only through
   luck on a handful of July rows, so it was not kept.
 
