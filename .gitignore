@@ -4,3 +4,5 @@ __pycache__/
 catboost_info/
 *.log
 opdi/
+credentials.json
+*credentials*.json

@@ -75,3 +75,8 @@ Did not work / not worth it:
 The ~60 departures over 3 h in Jan+Jul (mostly LIRF flights with no NM record) account for ~46% of the
 squared error, i.e. ~256 s of RMSE by themselves. Whatever is done to the other flights, the total
 cannot go much below that without a way to predict those rows.
+
+## Submissions
+- `quirky-honey_v2.parquet` uploaded 2026-10-07 (PDT). 3 LightGBM members, two-stage copy mixture, NM-missing stage,
+  stand/runway cell stats, queue and neighbour features, schedule-copy features. Local holdout RMSE (Jan+Jul 2025,
+  outliers kept): 359.6 s. The official score is not used to tune the model.
