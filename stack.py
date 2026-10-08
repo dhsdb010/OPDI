@@ -75,13 +75,13 @@ def with_cells(P, tr, ap):
     return Xtr, Xap
 
 
-def base_run(P, tr, ap):
+def base_run(P, tr, ap, seeds=1):
     """The taxiout.py base model: copy mixture, per-airport blend, copy-impossible rule, NM-missing stage.
     Returns unclipped predictions for the `ap` rows plus the classifier probability and the normal-flight regressor."""
     d, y, eq, gap, nm, nmf = P["d"], P["y"], P["eq"], P["gap"], P["nm"], P["nmf"]
     Xtr, Xap = with_cells(P, tr, ap)
     mix, p, r = T.two_stage(Xtr.copy(), y[tr].reset_index(drop=True), eq[tr].reset_index(drop=True), Xap.copy(),
-                            gap[ap].values, seeds=1, per_airport=True, copy_ok=T.copy_feasible(d[ap]))
+                            gap[ap].values, seeds=seeds, per_airport=True, copy_ok=T.copy_feasible(d[ap]))
     sel = nm[ap].values
     tn = tr & nm
     hyb = mix.copy()
@@ -194,7 +194,7 @@ def submit(a):
     y, month, d, n = P["y"], P["month"], P["d"], len(P["y"])
     tr, rk = P["ok"], P["is_rank"]
     base = {k: np.full(n, np.nan) for k in ["pred", "p", "r"]}
-    cache = os.path.join(CACHE, "stack_submit_base.npz")
+    cache = os.path.join(CACHE, "stack_submit_base.npz" if a.seeds == 1 else f"stack_submit_base_s{a.seeds}.npz")
     if os.path.exists(cache) and not a.refit:
         z = np.load(cache); base = {k: z[k] for k in ["pred", "p", "r"]}
         print("loaded cached base predictions")
@@ -203,7 +203,7 @@ def submit(a):
         jobs = [(tr & ~month.isin(b), tr & month.isin(b), f"block {b}") for b in blocks] + [(tr, rk, "ranking")]
         for trm, apm, name in jobs:
             t0 = time.time()
-            h, p, r = base_run(P, trm, apm)
+            h, p, r = base_run(P, trm, apm, seeds=a.seeds)
             base["pred"][apm.values], base["p"][apm.values], base["r"][apm.values] = h, p, r
             print(f"base {name}: {int(apm.sum()):,} rows in {time.time()-t0:.0f}s", flush=True)
             np.savez(cache, **base)
@@ -374,6 +374,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["validate", "submit"])
     ap.add_argument("--data", required=True)
+    ap.add_argument("--seeds", type=int, default=1, help="LightGBM members in the base model (submit)")
     ap.add_argument("--rounds", type=int, default=400)
     ap.add_argument("--variants", action="store_true", help="also test the extra feature groups")
     ap.add_argument("--ensemble", action="store_true", help="also test global + per-airport + CatBoost correctors")
