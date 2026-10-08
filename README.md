@@ -71,6 +71,7 @@ Data is not included in this repo; see https://prc-data-challenge-2026.netlify.a
 | quirky-honey_v6 | 302.01 | 130 / 233 |
 | quirky-honey_v9 (v6 + LIRF no-NM specialist) | 277.91 | 78 / 237 |
 | quirky-honey_v10 (v7 + LIRF no-NM specialist) | 277.94 | not best |
+| quirky-honey_v11 (v9 + neighbour-delay inputs in the corrector) | 276.30 | 74 / 237 |
 
 (`quirky-honey_v8` is the same file as v9; it was rejected by the scorer for the daily upload limit and has no score.
 v7 itself, the v6 pipeline with 5 LightGBM base members, was not uploaded without the specialist.)
@@ -148,6 +149,13 @@ second stage on top of the `taxiout.py` base model (copy mixture, per-airport bl
   but rests on 7 holdout and 8 training rows and would touch 4 ranking flights); ADS-B (about 2.1 TB for 2025, no ground
   coverage at the airports where error is largest).
 - `quirky-honey_v6.parquet`: v5 plus the cross-fitted stacking corrector (`stack.py submit`), local holdout 344.9 s (Jan 352.1, Jul 339.0). Official leaderboard RMSE: 302.01 s (rank 130/233 on 2026-10-07).
+- Neighbour-delay inputs (`_neighbour_delay`, added for v11): lateness (takeoff - SCHED, clipped to [-1 h, 4 h]) of the
+  other departures at the airport taking off within +-15/30/60 min, the +-30 min spread, and the flight's own lateness
+  minus the +-60 min mean. No labels are used. Global corrector 346.59 -> 345.51 (Jan 353.65 -> 353.24, Jul 340.79 -> 339.16);
+  3-model average 344.9 -> 343.7 (Jan 352.1 -> 351.4, Jul 339.0 -> 337.4). Tested and dropped: airport-day means of the
+  taxi proxy and lateness (346.47, no real change) and the +-30 min spread of the taxi proxy (346.56, Jan worse).
+- `quirky-honey_v11.parquet`: v6 pipeline with the neighbour-delay inputs plus the LIRF no-NM specialist. Official
+  leaderboard RMSE 276.30 s (rank 74/237 on 2026-10-08), 1.6 s better than v9.
 
 ## LIRF no-NM specialist (`specialist.py`)
 `python specialist.py validate --data DIR [--scope lirf|other|all]` and

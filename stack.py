@@ -143,6 +143,31 @@ def _past_future_means(P):
     return F
 
 
+def _neighbour_delay(P):
+    """Lateness (takeoff - SCHED, clipped to [-1 h, 4 h]) of OTHER departures at the same airport taking off within
+    +-15/30/60 min: mean, the +-30 min spread, and the flight's own lateness minus the +-60 min mean. Uses no labels."""
+    d = P["d"]
+    m = T.secs(d["MVT_TIME_UTC_mvt"]).values
+    dl = np.clip(P["gap"].values, -3600, 14400)
+    v = np.where(np.isfinite(dl), dl, 0.0)
+    ap = d["ADEP_mvt"].values
+    out = {k: np.full(len(d), np.nan) for k in ["n_dly_mean15", "n_dly_mean30", "n_dly_mean60", "n_dly_std30"]}
+    for a_ in np.unique(ap):
+        idx = np.where(ap == a_)[0]; o = np.argsort(m[idx]); ii = idx[o]; ms = m[ii]; vv = v[ii]
+        C1 = np.r_[0.0, np.cumsum(vv)]; C2 = np.r_[0.0, np.cumsum(vv * vv)]
+        for w in (900, 1800, 3600):
+            lo = np.searchsorted(ms, ms - w, "left"); hi = np.searchsorted(ms, ms + w, "right")
+            n = hi - lo - 1  # the flight itself is excluded
+            mu = np.where(n > 0, (C1[hi] - C1[lo] - vv) / np.maximum(n, 1), np.nan)
+            out[f"n_dly_mean{w // 60}"][ii] = mu
+            if w == 1800:
+                s2 = (C2[hi] - C2[lo] - vv * vv) / np.maximum(n, 1)
+                out["n_dly_std30"][ii] = np.where(n > 1, np.sqrt(np.maximum(s2 - mu * mu, 0)), np.nan)
+    F = pd.DataFrame(out)
+    F["n_own_dly_minus60"] = dl - F["n_dly_mean60"].values
+    return F
+
+
 def _delayed_copy_rate(P, tr, va, k=20.0):
     """Copy rate among delayed flights (takeoff > 1 h after SCHED) per (airport, operator, NM-or-not), smoothed toward
     the airport rate. Training rows use the other training months; the rest use the training months only."""
@@ -211,7 +236,7 @@ def submit(a):
     Xg = pd.concat([Xtr_g, Xrk_g]).reindex(range(n))
     for c in T.CATS:
         Xg[c] = Xg[c].astype(str)
-    groups = [_past_future_means(P), _delayed_copy_rate(P, tr, rk), _eurocontrol_daily(P)]
+    groups = [_past_future_means(P), _delayed_copy_rate(P, tr, rk), _eurocontrol_daily(P), _neighbour_delay(P)]
     Ftr = corrector_frame(P, Xg, base, tr.values)
     Frk = corrector_frame(P, Xg, base, rk.values)
     for g in groups:
@@ -313,8 +338,10 @@ def validate(a):
     if a.variants:
         t0 = time.time()
         E1 = _past_future_means(P); E2 = _delayed_copy_rate(P, tr, va); E3 = _eurocontrol_daily(P)
+        E4 = _neighbour_delay(P)
         print(f"extra features built in {time.time()-t0:.0f}s")
-        groups = {"neighbours (future, relative)": E1, "delayed-flight copy rate": E2, "EUROCONTROL daily series": E3}
+        groups = {"neighbours (future, relative)": E1, "delayed-flight copy rate": E2, "EUROCONTROL daily series": E3,
+                  "neighbour delay": E4}
     P_ = dict(T.PARAMS, num_leaves=63, min_data_in_leaf=200, learning_rate=0.05, lambda_l2=10)
 
     def run(names, tag):
@@ -334,7 +361,7 @@ def validate(a):
     for nme in groups:
         run([nme], "  + " + nme)
     if groups:
-        run(list(groups), "  + all three")
+        run(list(groups), "  + all groups")
     imp = pd.Series(m.feature_importance("gain"), index=m.feature_name()).sort_values(ascending=False)
     print("top corrector features by gain:", imp.head(6).round(0).to_dict())
     if a.ensemble:
