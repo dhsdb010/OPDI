@@ -52,6 +52,19 @@ def fit_predict(Xtr, ytr, gtr, Xte, gte, cats, seeds):
     return np.clip(out + gte, 30, np.maximum(gte, DAY_SHIFT_MAX))
 
 
+def lomo_predictions(P, seeds=3, scope="lirf"):
+    """Out-of-month specialist predictions for every labelled row of the scope: (row index, prediction)."""
+    y, month = P["y"].values, P["month"].values
+    idx = np.where(scope_mask(P, scope) & P["ok"].values & (y >= 0))[0]
+    X, cats = frame(P, idx)
+    ys, ms, gs = y[idx], month[idx], np.maximum(P["gap"].values[idx], 0)
+    pr = np.full(len(idx), np.nan)
+    for mth in range(1, 13):
+        te, tr = np.where(ms == mth)[0], np.where(ms != mth)[0]
+        pr[te] = fit_predict(X.iloc[tr], ys[tr], gs[tr], X.iloc[te], gs[te], cats, seeds)
+    return idx, pr
+
+
 def validate(a):
     P = S.prepare(a.data)
     y, month = P["y"].values, P["month"].values

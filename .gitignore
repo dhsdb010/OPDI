@@ -6,3 +6,4 @@ catboost_info/
 opdi/
 credentials.json
 *credentials*.json
+.DS_Store

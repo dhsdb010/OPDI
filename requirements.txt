@@ -1,0 +1,7 @@
+# versions the submitted files were produced with (Python 3.13.4)
+numpy==2.5.3
+pandas==3.0.6
+pyarrow==25.0.1
+lightgbm==4.7.0
+scikit-learn==1.9.1
+catboost==1.2.10

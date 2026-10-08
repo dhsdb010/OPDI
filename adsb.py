@@ -112,7 +112,7 @@ def fetch_day(d):
         return f"{d} ERROR no release"
     t0 = time.time()
     tmp = out + ".part"
-    cmd = "(" + "; ".join(f"curl -sSfL --retry 5 '{u}'" for u in urls) + ")"
+    cmd = "(" + "; ".join(f"curl -sSfL --retry 8 --retry-all-errors --connect-timeout 30 --speed-time 60 --speed-limit 50000 '{u}'" for u in urls) + ")"
     p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
     try:
         df = cut_stream(p.stdout)

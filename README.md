@@ -55,11 +55,33 @@ Taxi-out time prediction for 10 European airports (EUROCONTROL PRC Data Challeng
 | + corrector ensemble (global LightGBM, per-airport LightGBM, CatBoost, averaged) | 344.9 |
 
 ```bash
-pip install pandas pyarrow lightgbm scikit-learn
-python taxiout.py --data /path/to/data   # needs training_2025-*.parquet, ranking.parquet, submitting.parquet
+pip install -r requirements.txt
+python taxiout.py --data /path/to/data   # base model only; needs training_2025-*.parquet, ranking.parquet, submitting.parquet
 ```
 
+The submitted files use more than the base model: see "Reproducing the submitted file (v12)" below.
+
 Data is not included in this repo; see https://prc-data-challenge-2026.netlify.app/data.html.
+
+## Reproducing the submitted file (v12)
+`quirky-honey_v12.parquet` is built in stages; every stage is a command in this repository. `DIR` holds the organisers' files
+(`training_2025-*.parquet`, `ranking.parquet`, `submitting.parquet`); `PRC_CACHE` is a folder for intermediate arrays (default `/tmp`).
+Timings are for an 8-core laptop. No 2026 label is used anywhere. Not bit-exact between runs: multi-threaded gradient boosting
+does not reproduce to the last digit, so expect differences of a fraction of a second in RMSE.
+
+| Step | Command | What it makes | Time |
+|---|---|---|---|
+| 0 | download METAR and the EUROCONTROL daily series as described in `docs/external_data.md` | `opdi/metar/`, `opdi/eurocontrol/` | minutes |
+| 1 | `export PRC_CACHE=/some/folder; python stack.py validate --data DIR` | out-of-block base predictions for Jan+Jul 2025 (`stack_val_base.npz`) | ~40 min |
+| 2 | `python stack.py submit --data DIR --out v11_corrected.parquet` | base model + cross-fitted corrector for the ranking rows (`stack_submit_base.npz`) | ~45 min |
+| 3 | `python specialist.py apply --data DIR --base v11_corrected.parquet --out quirky-honey_v11.parquet --seeds 5` | v11: LIRF no-NM specialist on top (official 276.30) | ~5 min |
+| 4 | `python holdout.py --data DIR --out holdout.parquet` | out-of-sample v11-equivalent predictions for Jan+Jul 2025 | ~20 min |
+| 5 | `python adsb.py fetch --days 2025-01,2025-07,2026-01,2026-07 --procs 8` | ADS-B cuts, `opdi/adsb/cut/` (about 1.5 GB kept, 124 days streamed) | ~3 h |
+| 6 | `python adsb_stage.py events --data DIR` | per-day off-block events, `opdi/adsb/feat/` | ~2 min |
+| 7 | `python adsb_stage.py validate --data DIR --holdout holdout.parquet` | the test that decides whether the stage is kept | ~10 min |
+| 8 | `python adsb_stage.py apply --data DIR --holdout holdout.parquet --base quirky-honey_v11.parquet --out quirky-honey_v12.parquet` | v12 (official 269.33) | ~10 min |
+
+`specialist.py validate` and `stack.py validate --variants --ensemble` print the validation tables quoted in this README.
 
 ## Official leaderboard history (RMSE, s)
 
