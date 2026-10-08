@@ -20,6 +20,7 @@ import sys
 import tarfile
 import time
 import urllib.request
+import zlib
 from concurrent.futures import ProcessPoolExecutor
 from datetime import date, timedelta
 
@@ -54,11 +55,11 @@ def cut_stream(fobj):
             if not m.isfile() or "/traces/" not in "/" + m.name.lstrip("./"):
                 continue
             raw = tf.extractfile(m).read()
-            if raw[:2] == b"\x1f\x8b":
-                raw = gzip.decompress(raw)
             try:
+                if raw[:2] == b"\x1f\x8b":
+                    raw = gzip.decompress(raw)
                 tr = json.loads(raw)
-            except ValueError:
+            except (ValueError, OSError, EOFError, zlib.error):  # a corrupted trace file loses that aircraft only
                 continue
             t0 = float(tr.get("timestamp", 0.0))
             icao = tr.get("icao", "")

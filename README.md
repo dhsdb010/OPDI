@@ -222,6 +222,12 @@ off-block events and applies the stage; see `docs/external_data.md` for the sour
   than v11, larger than the 4.9 s local gain.
 - Idea credited to the public repository EnioAguiar/prc-taxiout-2026 (GPLv3): adsb.lol traces cut to airport boxes, off-block
   events per takeoff, and a stacking stage on top. Re-implemented here from their written description; no code copied.
+- Coverage probe for the other months: three sample days of late 2025 (15 Oct, 15 Nov, 15 Dec) were checked to see whether training
+  on more months could unlock EGLL, LEMD or LFPG. It cannot: at EGLL and LEMD the matched share swings from day to day (EGLL 65% on
+  15 Nov, 11% on 15 Dec) but few flights are seen parked and almost none of those are within 60 s of the official off-block time
+  (EGLL 0%, LEMD 5-25%), because the traces mostly start after push-back. LFPG and LTFM have essentially no coverage.
+- Robustness: a corrupted compressed trace file inside a daily archive (seen on 15 Oct 2025) used to crash the whole day; the cutter
+  now skips that trace and loses only that aircraft. None of the 124 days used for v12 hit this.
 - Tried and not kept on the corrector (all on top of the v11 corrector, both months required to improve): arrival taxi-in near
   push-back (-0.14 s, within noise), NM time-consistency differences, within-hour rank of the taxi proxy, stand-prefix groups,
   an ML-fitted unimpeded taxi time and an ATFM-style airport x 2-hour x weekday cell (January better, July worse).
