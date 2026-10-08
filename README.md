@@ -69,6 +69,11 @@ Data is not included in this repo; see https://prc-data-challenge-2026.netlify.a
 | quirky-honey_v3 | 314.14 | 140 / 233 |
 | quirky-honey_v5 | 311.85 | 138 / 233 |
 | quirky-honey_v6 | 302.01 | 130 / 233 |
+| quirky-honey_v9 (v6 + LIRF no-NM specialist) | 277.91 | 78 / 237 |
+| quirky-honey_v10 (v7 + LIRF no-NM specialist) | 277.94 | not best |
+
+(`quirky-honey_v8` is the same file as v9; it was rejected by the scorer for the daily upload limit and has no score.
+v7 itself, the v6 pipeline with 5 LightGBM base members, was not uploaded without the specialist.)
 
 The leaderboard was used as a sanity check only, never to choose features or tune rules.
 
@@ -167,5 +172,11 @@ second stage on top of the `taxiout.py` base model (copy mixture, per-airport bl
   Phoenix-Ops-LTD/prc2026-taxiout (GPLv3, team zestful-fountain), found by comparing their reported holdout error scopes with
   ours. It is re-implemented here independently on our features, not copied.
 - `quirky-honey_v8.parquet` (v6 with the 383 LIRF no-NM ranking rows replaced) was rejected by the scorer with
-  `DAILY_LIMIT_REACHED` (5 of 5 uploads used that day), so it has no official score. The identical file was prepared as
-  `quirky-honey_v9.parquet` for upload after the quota reset.
+  `DAILY_LIMIT_REACHED` (5 of 5 uploads used that day), so it has no official score. The identical file was uploaded as
+  `quirky-honey_v9.parquet` after the quota reset.
+- Official results (2026-10-08): `quirky-honey_v9.parquet` 277.91 s (rank 78/237), 24.1 s better than v6's 302.01 s. The
+  official gain is close to the top of what the local numbers suggested (352.2 -> 319.3 on the base-only holdout, about 10%
+  lower officially than locally).
+- `quirky-honey_v10.parquet` is the same specialist on top of v7 (the v6 pipeline with 5 LightGBM base members instead of 1,
+  `stack.py submit --seeds 5`): 277.94 s, 0.03 s worse than v9. More base members are not worth the extra 2.5 h of compute.
+- The leaderboard was used as a sanity check only; the specialist was chosen from the leave-one-month-out results above.
