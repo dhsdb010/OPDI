@@ -30,6 +30,11 @@ PARAMS = dict(objective="regression", learning_rate=0.05, num_leaves=31, min_dat
               bagging_fraction=0.8, bagging_freq=1, verbose=-1, num_threads=4)
 ROUNDS = 300
 AIRPORTS = sorted(adsb.AIRPORTS)
+# ADS-B inputs are used only where the 2025 training months have stable, meaningful coverage. At the other airports the
+# 2026 ranking months have a very different share of matched flights (EGLL 14% -> 80%, LEMD 2% -> 64%, LIRF 44% -> 24%),
+# so the stage could not know how far to trust a trace there. Chosen from coverage statistics, not from scores.
+ADSB_AIRPORTS = ["EDDF", "EDDM", "EHAM", "LEBL", "LSZH"]
+RAW_ADSB = ["adsb_taxi", "adsb_taxi_move", "adsb_gs0", "adsb_parked", "adsb_takeoff_err", "adsb_n", "adsb_gap_max"]
 
 
 def _day_job(args):
@@ -69,6 +74,8 @@ def load_features(prefix):
 
 
 def add_derived(df):
+    off = ~df["ADEP_mvt"].isin(ADSB_AIRPORTS).values
+    df.loc[off, RAW_ADSB] = np.nan
     df["ml_aobt"] = (df["MVT_TIME_UTC_mvt"] - df["AOBT_3_flt"]).dt.total_seconds()
     df["ad_minus_pred"] = df["adsb_taxi_move"] - df["pred"]
     df["ad_minus_aobt"] = df["adsb_taxi_move"] - df["ml_aobt"]

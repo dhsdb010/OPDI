@@ -72,6 +72,7 @@ Data is not included in this repo; see https://prc-data-challenge-2026.netlify.a
 | quirky-honey_v9 (v6 + LIRF no-NM specialist) | 277.91 | 78 / 237 |
 | quirky-honey_v10 (v7 + LIRF no-NM specialist) | 277.94 | not best |
 | quirky-honey_v11 (v9 + neighbour-delay inputs in the corrector) | 276.30 | 74 / 237 |
+| quirky-honey_v12 (v11 + ADS-B stage) | 269.33 | 62 / 238 |
 
 (`quirky-honey_v8` is the same file as v9; it was rejected by the scorer for the daily upload limit and has no score.
 v7 itself, the v6 pipeline with 5 LightGBM base members, was not uploaded without the specialist.)
@@ -102,8 +103,9 @@ Did not work / not worth it:
   50/50 blend with the baseline reached 233.8, which is just an ensemble effect. No repeated default taxi times.
 - CatBoost copy classifier averaged into P(copy): AUC 0.887 -> 0.895, but holdout RMSE 359.1 -> 362.5
   (Jan 361.1 -> 363.0, Jul 357.4 -> 362.2), so not kept. Better AUC did not mean a better mixture.
-- ADS-B ground traces (adsb.lol, ~2.1 TB for 2025) and OPDI flight events (221 MB per 10 days, airborne milestones
-  only as far as documented) were judged infeasible and not downloaded.
+- OPDI flight events (221 MB per 10 days, airborne milestones only as far as documented) were judged not worth downloading.
+  (ADS-B ground traces were first judged infeasible too; a streamed, cut download of only Jan+Jul turned out to be possible
+  and useful, see the ADS-B stage section.)
 - Ideas reviewed from another AI run's code (per-airport LightGBM x10, runway-heading wind components, stand-to-runway
   distance, METAR nearest-obs join): their holdout raw RMSE was 545 s (winter) / 470 s (summer) against our 359 / 348 s on
   Jan/Jul, mainly because they exclude MVT_TIME and AOBT_3 and have no copy-regime or LOBT handling. Only per-airport models
@@ -146,8 +148,7 @@ second stage on top of the `taxiout.py` base model (copy mixture, per-airport bl
   description and not copied: cross-fitted corrector, delayed-flight copy rate, future/relative neighbour windows, averaging
   global/per-airport/CatBoost models.
 - Not adopted: a hand-fitted Rome rule for no-NM LIRF flights 15-30 h late (looks large on the 2025 holdout, 356.6 -> 333.2,
-  but rests on 7 holdout and 8 training rows and would touch 4 ranking flights); ADS-B (about 2.1 TB for 2025, no ground
-  coverage at the airports where error is largest).
+  but rests on 7 holdout and 8 training rows and would touch 4 ranking flights).
 - `quirky-honey_v6.parquet`: v5 plus the cross-fitted stacking corrector (`stack.py submit`), local holdout 344.9 s (Jan 352.1, Jul 339.0). Official leaderboard RMSE: 302.01 s (rank 130/233 on 2026-10-07).
 - Neighbour-delay inputs (`_neighbour_delay`, added for v11): lateness (takeoff - SCHED, clipped to [-1 h, 4 h]) of the
   other departures at the airport taking off within +-15/30/60 min, the +-30 min spread, and the flight's own lateness
@@ -188,3 +189,39 @@ second stage on top of the `taxiout.py` base model (copy mixture, per-airport bl
 - `quirky-honey_v10.parquet` is the same specialist on top of v7 (the v6 pipeline with 5 LightGBM base members instead of 1,
   `stack.py submit --seeds 5`): 277.94 s, 0.03 s worse than v9. More base members are not worth the extra 2.5 h of compute.
 - The leaderboard was used as a sanity check only; the specialist was chosen from the leave-one-month-out results above.
+
+## ADS-B stage (`adsb.py`, `adsb_stage.py`)
+`python adsb.py fetch --procs 8` streams the adsb.lol `globe_history` daily archives (ODbL 1.0) for every day of January and July of
+2025 and 2026 and keeps only the points within about 11 km of the ten airports that are on the ground or below 3,000 ft
+(about 1.5 GB for 124 days; the ~3 GB daily archives are never stored). `python adsb_stage.py events|validate|apply` derives
+off-block events and applies the stage; see `docs/external_data.md` for the source and licence.
+
+- Events: a takeoff is a ground point followed by an airborne point of the same aircraft within 120 s; the off-block event is
+  the first point of the ground segment that ends there (segments break at gaps over 600 s). Flights are matched to movement
+  records by callsign within 300 s of takeoff, otherwise by the nearest unused takeoff within 90 s. Inputs: time from first
+  ground point and from first movement to takeoff, speed at the first point, "seen parked", takeoff error, number of points,
+  largest gap, and differences to the v11 prediction and to the NM off-block proxy.
+- Signal: at EDDM, LSZH, LEBL and EHAM an aircraft seen parked before push-back gives an off-block time within 60 s of the
+  official one 50-80% of the time, against 18-29% for the NM off-block time (AOBT_3). Only 7-25% of flights there are seen
+  parked, and ADS-B is almost absent at LTFM, LFPG, LEMD and EGLL. RMSE of the raw ADS-B estimate is sometimes worse than NM
+  because of a few bad matches, so it is only used as an input, never as a replacement.
+- Stage: a LightGBM correction of the v11 prediction (clipped residual, 300 rounds, 3 seeds in the final fit), trained on the
+  out-of-sample v11 predictions for Jan+Jul 2025 (344k flights), applied to predictions up to 7,200 s outside the LIRF no-NM
+  specialist scope. A control stage with the same inputs minus the ADS-B ones is trained alongside.
+- Coverage guard: the share of flights with a matched event differs a lot between the 2025 training months and the 2026
+  ranking months (EGLL 14% -> 80%, LEMD 2% -> 64%, LIRF 44% -> 24%, EDDF 71% -> 55%, EDDM 58% -> 92%). The stage could not know how
+  far to trust a trace where the training months hardly contain any, so the ADS-B inputs are used only at EDDF, EDDM, EHAM, LEBL
+  and LSZH, and set to missing at the other airports. This was chosen from coverage statistics, before looking at scores, and
+  cost 0.6 s of validated gain.
+- Validation (all of Jan+Jul 2025, outliers kept, decision rule fixed in advance: keep only if better than both the v11
+  prediction and the control in both months and overall). Leave-one-week-out: v11 312.9 (Jan 341.8, Jul 287.5), control 312.5
+  (340.2, 288.3), with ADS-B 308.0 (335.7, 283.7); normal flights at the five airports 187.3 -> 170.7. Cross-month (train
+  on the other month, stricter): 312.9 -> 311.4 (Jan 341.8 -> 340.7, Jul 287.5 -> 285.7). An earlier 10-day test with a
+  leave-one-day-out design had made the control look useful (-3.3 s); with whole weeks held out the control does nothing.
+- `quirky-honey_v12.parquet`: v11 plus the stage. Official leaderboard RMSE 269.33 s (rank 62/238 on 2026-10-08), 7.0 s better
+  than v11, larger than the 4.9 s local gain.
+- Idea credited to the public repository EnioAguiar/prc-taxiout-2026 (GPLv3): adsb.lol traces cut to airport boxes, off-block
+  events per takeoff, and a stacking stage on top. Re-implemented here from their written description; no code copied.
+- Tried and not kept on the corrector (all on top of the v11 corrector, both months required to improve): arrival taxi-in near
+  push-back (-0.14 s, within noise), NM time-consistency differences, within-hour rank of the taxi proxy, stand-prefix groups,
+  an ML-fitted unimpeded taxi time and an ATFM-style airport x 2-hour x weekday cell (January better, July worse).
