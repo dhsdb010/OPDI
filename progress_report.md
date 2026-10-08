@@ -110,6 +110,10 @@ With the full 3-model corrector: 344.9 → 343.7 (Jan 352.1 → 351.4, Jul 339.0
 - Normal-flight error is spread evenly over airports and well calibrated; a perfect copy classifier would be worth at most ~8 s locally.
 - Two label-noise rows (one-day-shift labels at LFPG, January 2025) make up ~29% of the local squared error and cannot be predicted.
 
+- Stage variants (neighbour ADS-B inputs, 150/600 rounds, 5 seeds) and a log-target blend for the stage-2 regressor: none worth a new
+  file (best case 0.1-0.2 s, or one month worse). An attempt to add the other ten months of ADS-B was abandoned because the
+  connection fell to 1-2 MB/s.
+
 ## 7. Next steps
 
 1. Review the other AI agent's v17 file for ideas only (it is not uploaded): compare tail handling and normal-flight differences with ours.

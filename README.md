@@ -250,6 +250,17 @@ off-block events and applies the stage; see `docs/external_data.md` for the sour
   (EGLL 0%, LEMD 5-25%), because the traces mostly start after push-back. LFPG and LTFM have essentially no coverage.
 - Robustness: a corrupted compressed trace file inside a daily archive (seen on 15 Oct 2025) used to crash the whole day; the cutter
   now skips that trace and loses only that aircraft. None of the 124 days used for v12 hit this.
+- Stage variants (leave-one-week-out on all of Jan+Jul 2025, against the stage used in v12: 308.08, Jan 335.75, Jul 283.81; keep only
+  if both months improve): neighbour ADS-B inputs (mean ADS-B minus NM off-block estimate and share seen parked among the other
+  flights within +-30/60 min at the airport) 307.89 but January 335.79, not kept; 150 rounds 308.17 and 600 rounds 308.30, not kept
+  (300 is the right size); 5 seeds instead of 3 in the final fit 307.98, both months better but only by 0.1 s, not worth a new file.
+- Log-target blend for the stage-2 regressor on non-copy flights (same features and rows, Jan+Jul 2025 holdout, normal flights):
+  raw target 233.72, log target with smearing 238.28, best blend (25% log) 233.51 with January better and July worse. The
+  predictions correlate at 0.988, so the target change adds little diversity; not kept, and not carried into the full base model.
+- More ADS-B months: downloading the other ten months of 2025 (about 300 days, ~3 GB streamed per day) to train the stage on about a
+  million flights was started and abandoned. Inbound speed fell from about 30 MB/s (the first 124 days) to 1-2 MB/s, a
+  shared network that does not leave room for hundreds of GB; it can be resumed with the same `adsb.py fetch` command (finished days
+  are skipped).
 - Tried and not kept on the corrector (all on top of the v11 corrector, both months required to improve): arrival taxi-in near
   push-back (-0.14 s, within noise), NM time-consistency differences, within-hour rank of the taxi proxy, stand-prefix groups,
   an ML-fitted unimpeded taxi time and an ATFM-style airport x 2-hour x weekday cell (January better, July worse).
