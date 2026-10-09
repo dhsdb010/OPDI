@@ -15,6 +15,15 @@ import numpy as np, pandas as pd, lightgbm as lgb
 import taxiout as T
 
 CACHE = os.environ.get("PRC_CACHE", "/tmp")
+RANKING = os.environ.get("PRC_RANKING", "ranking.parquet")  # final phase: PRC_RANKING=final_ranking.parquet
+TEMPLATE = os.environ.get("PRC_TEMPLATE", "submitting.parquet")  # final phase: PRC_TEMPLATE=final_submitting.parquet
+
+
+def submit_cache(seeds=1, ranking=None):
+    """Cache file of the out-of-block base predictions (training rows) and the base predictions of the ranking rows."""
+    ranking = ranking or RANKING
+    tag = "" if ranking == "ranking.parquet" else "_" + os.path.splitext(os.path.basename(ranking))[0]
+    return os.path.join(CACHE, f"stack_submit_base{tag}.npz" if seeds == 1 else f"stack_submit_base{tag}_s{seeds}.npz")
 BLOCKS = [[2, 3], [4, 5], [6, 8], [9, 10], [11, 12]]
 
 
@@ -37,7 +46,7 @@ def prepare(data):
 def prepare_all(data):
     """Training and ranking departures in one frame (ranking rows have no label), so every helper works with masks."""
     train = T.load(os.path.join(data, "training_2025-*.parquet"))
-    rank = T.load(os.path.join(data, "ranking.parquet"))
+    rank = T.load(os.path.join(data, RANKING))
     parts = []
     for df in (train, rank):
         Xall = T.features(df)
@@ -219,13 +228,21 @@ def submit(a):
     y, month, d, n = P["y"], P["month"], P["d"], len(P["y"])
     tr, rk = P["ok"], P["is_rank"]
     base = {k: np.full(n, np.nan) for k in ["pred", "p", "r"]}
-    cache = os.path.join(CACHE, "stack_submit_base.npz" if a.seeds == 1 else f"stack_submit_base_s{a.seeds}.npz")
+    cache = submit_cache(a.seeds)
     if os.path.exists(cache) and not a.refit:
         z = np.load(cache); base = {k: z[k] for k in ["pred", "p", "r"]}
         print("loaded cached base predictions")
     else:
         blocks = [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11, 12]]
         jobs = [(tr & ~month.isin(b), tr & month.isin(b), f"block {b}") for b in blocks] + [(tr, rk, "ranking")]
+        default = submit_cache(a.seeds, "ranking.parquet")
+        if RANKING != "ranking.parquet" and os.path.exists(default) and not a.refit:
+            # another ranking file: the out-of-block predictions of the training rows do not depend on it, only the ranking rows are new
+            z0, ntr = np.load(default), int((~rk).sum())
+            for k in base:
+                base[k][:ntr] = z0[k][:ntr]
+            jobs = jobs[-1:]
+            print("reusing the out-of-block predictions of the %s training rows from %s" % (format(ntr, ","), os.path.basename(default)))
         for trm, apm, name in jobs:
             t0 = time.time()
             h, p, r = base_run(P, trm, apm, seeds=a.seeds)
@@ -275,7 +292,7 @@ def submit(a):
     new[app] = pv[app] + corr[app]
     drk = d[rk.values]
     final = np.clip(T.lobt_clip(new, drk), 30, None)
-    sub = pd.read_parquet(os.path.join(a.data, "submitting.parquet"))
+    sub = pd.read_parquet(os.path.join(a.data, TEMPLATE))
     pm = pd.Series(final, index=drk["MVT_ID_mvt"].values)
     sub["TAXITIME_SEC_mvt"] = sub["MVT_ID_mvt"].map(pm).astype(float)
     assert sub["TAXITIME_SEC_mvt"].notna().all(), "unmatched ids"

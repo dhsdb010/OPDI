@@ -20,13 +20,10 @@ import stack as S
 import taxiout as T
 
 
-def main(a):
-    P = S.prepare(a.data)
-    y, month, ok, d = P["y"], P["month"], P["ok"], P["d"]
+def corrected(P, base, tr, va):
+    """v11-style prediction (base + three-model corrector, no specialist) for the rows `va`, with the corrector trained on `tr`."""
+    y, month, d = P["y"], P["month"], P["d"]
     n = len(y)
-    va, tr = month.isin([1, 7]) & ok, ~month.isin([1, 7]) & ok
-    z = np.load(os.path.join(S.CACHE, "stack_val_base.npz"))
-    base = {k: z[k] for k in ["pred", "p", "r"]}
     Xtr_g, Xva_g = S.with_cells(P, tr, va)
     Xg = pd.concat([Xtr_g, Xva_g]).reindex(range(n))
     for c in T.CATS:
@@ -47,10 +44,10 @@ def main(a):
     c_pa = c_g.copy()
     apx, apb = Af["AIRPORT"].astype(str).values, Fva["AIRPORT"].astype(str).values
     for a_ in np.unique(apb):
-        s = apx == a_
-        if s.sum() < 500:
+        s_ = apx == a_
+        if s_.sum() < 500:
             continue
-        m = lgb.train({**dict(P_, num_leaves=31, min_data_in_leaf=100), "objective": "regression"}, lgb.Dataset(Af[s], rf[s]), 400)
+        m = lgb.train({**dict(P_, num_leaves=31, min_data_in_leaf=100), "objective": "regression"}, lgb.Dataset(Af[s_], rf[s_]), 400)
         c_pa[apb == a_] = m.predict(Fva[apb == a_])
     cats = [c for c in T.CATS if c in Af]
     f_ = lambda X: X.assign(**{c: X[c].astype(str) for c in cats})
@@ -61,23 +58,59 @@ def main(a):
     app = pv <= 7200
     pred = pv.copy()
     pred[app] = pv[app] + ((c_g + c_pa + c_cb) / 3)[app]
-    pred = np.clip(T.lobt_clip(pred, d[va.values]), 30, None)
-    # the specialist replaces the LIRF no-NM rows, predicted out of month
-    idx, sp = SP.lomo_predictions(P, seeds=a.seeds)
-    vidx = np.where(va.values)[0]
-    pos = {j: k for k, j in enumerate(vidx)}
-    spec = np.zeros(len(vidx), bool)
+    return pv, np.clip(T.lobt_clip(pred, d[va.values]), 30, None)
+
+
+def with_specialist(P, va, pred, seeds):
+    """Replace the LIRF no-NM rows of `pred` (rows `va`) by the specialist's out-of-month predictions."""
+    idx, sp = SP.lomo_predictions(P, seeds=seeds)
+    pos = {j: k for k, j in enumerate(np.where(va.values)[0])}
+    spec = np.zeros(int(va.sum()), bool)
     for j, v in zip(idx, sp):
         if j in pos:
             pred[pos[j]] = v
             spec[pos[j]] = True
-    dv = d[va.values].reset_index(drop=True)
-    out = pd.DataFrame({"MVT_ID_mvt": dv["MVT_ID_mvt"].values, "y": y[va].values, "pred": pred, "base": pv,
-                        "p_copy": base["p"][va.values], "spec": spec, "month": month[va].values})
-    out.to_parquet(a.out)
+    return pred, spec
+
+
+def frame_out(P, va, pv, pred, spec, base):
+    dv = P["d"][va.values].reset_index(drop=True)
+    return pd.DataFrame({"MVT_ID_mvt": dv["MVT_ID_mvt"].values, "y": P["y"][va].values, "pred": pred, "base": pv,
+                         "p_copy": base["p"][va.values], "spec": spec, "month": P["month"][va].values})
+
+
+def report(out):
     rm = lambda m: np.sqrt(np.mean((out.pred[m] - out.y[m]) ** 2))
-    print("holdout: all %.1f | Jan %.1f | Jul %.1f | specialist rows %d | wrote %s" % (
-        rm(np.ones(len(out), bool)), rm(out.month == 1), rm(out.month == 7), spec.sum(), a.out))
+    print("all %.1f" % rm(np.ones(len(out), bool)) + "".join(" | month %d %.1f" % (m, rm(out.month == m)) for m in sorted(out.month.unique())), flush=True)
+
+
+def main(a):
+    P = S.prepare(a.data)
+    month, ok = P["month"], P["ok"]
+    if a.all_months:
+        # every month predicted by a corrector trained on the other two-month blocks; base = out-of-block predictions of `stack.py submit`
+        z = np.load(S.submit_cache(ranking="ranking.parquet"))
+        n = len(P["y"])
+        base = {k: z[k][:n] for k in ["pred", "p", "r"]}
+        parts = []
+        for b in [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11, 12]]:
+            va, tr = month.isin(b) & ok, ~month.isin(b) & ok
+            pv, pred = corrected(P, base, tr, va)
+            pred, spec = with_specialist(P, va, pred, a.seeds)
+            parts.append(frame_out(P, va, pv, pred, spec, base))
+            print("block", b, end=": ")
+            report(parts[-1])
+        out = pd.concat(parts, ignore_index=True)
+    else:
+        z = np.load(os.path.join(S.CACHE, "stack_val_base.npz"))
+        base = {k: z[k] for k in ["pred", "p", "r"]}
+        va, tr = month.isin([1, 7]) & ok, ~month.isin([1, 7]) & ok
+        pv, pred = corrected(P, base, tr, va)
+        pred, spec = with_specialist(P, va, pred, a.seeds)
+        out = frame_out(P, va, pv, pred, spec, base)
+    out.to_parquet(a.out)
+    print("specialist rows %d | wrote %s" % (out.spec.sum(), a.out), end=" | ")
+    report(out)
 
 
 if __name__ == "__main__":
@@ -85,4 +118,5 @@ if __name__ == "__main__":
     ap.add_argument("--data", required=True)
     ap.add_argument("--out", default="holdout.parquet")
     ap.add_argument("--seeds", type=int, default=3, help="CatBoost seeds of the specialist")
+    ap.add_argument("--all-months", action="store_true", help="out-of-sample predictions for all 12 months (needs stack_submit_base.npz)")
     main(ap.parse_args())

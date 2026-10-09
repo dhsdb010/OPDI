@@ -43,7 +43,7 @@ def _day_job(args):
     if os.path.exists(out):
         return d, "cached"
     y, m = d[:4], d[5:7]
-    src = os.path.join(data, "ranking.parquet") if y == "2026" else glob.glob(os.path.join(data, f"training_2025-{m}-01_*.parquet"))[0]
+    src = os.path.join(data, os.environ.get("PRC_RANKING", "ranking.parquet")) if y == "2026" else glob.glob(os.path.join(data, f"training_2025-{m}-01_*.parquet"))[0]
     x = pd.read_parquet(src, columns=["MVT_ID_mvt", "PHASE_mvt", "ADEP_mvt", "FLIGHT_mvt", "MVT_TIME_UTC_mvt", "AOBT_3_flt"])
     x = x[(x.PHASE_mvt == "DEP") & (x.MVT_TIME_UTC_mvt.dt.date.astype(str) == d)]
     ev = adsb.day_events(date.fromisoformat(d))
@@ -57,11 +57,7 @@ def _day_job(args):
 
 
 def events(a):
-    days = []
-    for ym in ("2025-01", "2025-07", "2026-01", "2026-07"):
-        days += [str(x) for x in adsb.days_of(ym)]
-    have = {os.path.basename(f)[:10] for f in glob.glob(os.path.join(adsb.ROOT, "cut", "*.parquet"))}
-    days = [d for d in days if d in have]
+    days = sorted(os.path.basename(f)[:10] for f in glob.glob(os.path.join(adsb.ROOT, "cut", "*.parquet")))
     print(f"{len(days)} days with ADS-B cuts")
     with ProcessPoolExecutor(a.procs) as ex:
         for d, msg in ex.map(_day_job, [(a.data, d) for d in days]):
@@ -143,6 +139,39 @@ def validate(a):
     print("\nDECISION (primary test): ADS-B stage beats v11 and the control in both months and overall:", "KEEP" if keep else "DO NOT KEEP")
 
 
+def validate_all(a):
+    """Milestone check for training the stage on all months: for every week of Jan, Feb, Jun and Jul 2025 compare
+    (a) the v11-style prediction, (b) the stage trained on Jan+Jul only (the v12 recipe; for Jan/Jul weeks the held-out week is left out) and
+    (c) the stage trained on all other weeks of every month. (c) is kept only if it beats (b) in BOTH Jan/Jul and Feb/Jun."""
+    df = holdout_frame(a.holdout)
+    train_ok = ((df.pred <= 7200) & (df.y >= 0) & (df.y <= 10800) & ~df.spec).values
+    cols = BASE_COLS + ADSB_COLS
+    sel_all = (df.pred <= 7200).values & ~df.spec.values
+    jj = df.month.isin([1, 7]).values
+    test_months = [1, 2, 6, 7]
+    p_jj, p_all = df.pred.values.copy(), df.pred.values.copy()
+    m_jj_full = fit_stage(df, jj & train_ok, cols)  # Jan+Jul model, used for the Feb/Jun weeks
+    for g in sorted(df.loc[df.month.isin(test_months), "week"].unique()):
+        te = (df["week"] == g).values
+        sel = te & sel_all
+        mo = int(df.loc[te, "month"].iloc[0])
+        m_a = fit_stage(df, ~te & train_ok, cols)
+        p_all[sel] = df.pred.values[sel] + m_a.predict(df.loc[sel, cols])
+        m_b = m_jj_full if mo in (2, 6) else fit_stage(df, jj & ~te & train_ok, cols)
+        p_jj[sel] = df.pred.values[sel] + m_b.predict(df.loc[sel, cols])
+        print("week", g, "done", flush=True)
+    rm = lambda p, m: float(np.sqrt(np.mean((p[m] - df.y.values[m]) ** 2)))
+    groups = {"Jan+Jul": df.month.isin([1, 7]).values, "Feb+Jun": df.month.isin([2, 6]).values, "all four months": df.month.isin(test_months).values}
+    print(f"\n{'':22s} {'v11-style':>10s} {'Jan+Jul stage':>14s} {'all-months stage':>17s}")
+    res = {}
+    for k, m in groups.items():
+        res[k] = (rm(df.pred.values, m), rm(p_jj, m), rm(p_all, m))
+        print(f"{k:22s} {res[k][0]:10.1f} {res[k][1]:14.1f} {res[k][2]:17.1f}   ({int(m.sum()):,} flights)")
+    keep = res["Jan+Jul"][2] < res["Jan+Jul"][1] and res["Feb+Jun"][2] < res["Feb+Jun"][1]
+    print("\nDECISION: all-months stage beats the Jan+Jul stage in both groups:", "KEEP" if keep else "DO NOT KEEP")
+    print("four-month proxy (all flights kept): v11-style %.1f | Jan+Jul stage %.1f | all-months stage %.1f" % res["all four months"])
+
+
 def apply(a):
     import stack as S
     df = holdout_frame(a.holdout)
@@ -155,7 +184,7 @@ def apply(a):
     # ranking rows: v11 predictions, base P(copy), event features
     P = S.prepare_all(a.data)
     rk = P["is_rank"].values
-    z = np.load(os.path.join(S.CACHE, "stack_submit_base.npz"))
+    z = np.load(S.submit_cache())
     rid = P["d"]["MVT_ID_mvt"].values[rk]
     pc = pd.Series(z["p"][rk], index=rid)
     nm_lirf = pd.Series((P["nm"].values & (P["K"]["ap"] == "LIRF").values)[rk], index=rid)
@@ -180,7 +209,7 @@ def apply(a):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["events", "validate", "apply"])
+    ap.add_argument("cmd", choices=["events", "validate", "validate-all", "apply"])
     ap.add_argument("--data", required=True)
     ap.add_argument("--holdout")
     ap.add_argument("--base")
@@ -188,4 +217,4 @@ if __name__ == "__main__":
     ap.add_argument("--procs", type=int, default=4)
     ap.add_argument("--seeds", type=int, default=3)
     a = ap.parse_args()
-    {"events": events, "validate": validate, "apply": apply}[a.cmd](a)
+    {"events": events, "validate": validate, "validate-all": validate_all, "apply": apply}[a.cmd](a)

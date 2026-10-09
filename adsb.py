@@ -89,8 +89,8 @@ def cut_stream(fobj):
 def release_parts(d):
     """Download URLs of the release parts for day d (prod release, else staging)."""
     repo = f"globe_history_{d.year}"
-    for kind in ("prod", "staging"):
-        tag = f"v{d:%Y.%m.%d}-planes-readsb-{kind}-0"
+    for kind, suffix in (("prod", "0"), ("staging", "0"), ("prod", "0tmp"), ("staging", "0tmp")):  # some days only exist as "-0tmp"
+        tag = f"v{d:%Y.%m.%d}-planes-readsb-{kind}-{suffix}"
         try:
             with urllib.request.urlopen(f"https://api.github.com/repos/adsblol/{repo}/releases/tags/{tag}", timeout=60) as r:
                 rel = json.load(r)
@@ -112,7 +112,7 @@ def fetch_day(d):
         return f"{d} ERROR no release"
     t0 = time.time()
     tmp = out + ".part"
-    cmd = "(" + "; ".join(f"curl -sSfL --retry 8 --retry-all-errors --connect-timeout 30 --speed-time 60 --speed-limit 50000 '{u}'" for u in urls) + ")"
+    cmd = "(" + "; ".join(f"curl -sSfL --retry 8 --retry-all-errors --connect-timeout 30 --speed-time 180 --speed-limit 5000 '{u}'" for u in urls) + ")"
     p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
     try:
         df = cut_stream(p.stdout)
