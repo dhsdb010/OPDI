@@ -87,19 +87,44 @@ def cut_stream(fobj):
 
 
 def release_parts(d):
-    """Download URLs of the release parts for day d (prod release, else staging)."""
-    repo = f"globe_history_{d.year}"
-    for kind, suffix in (("prod", "0"), ("staging", "0"), ("prod", "0tmp"), ("staging", "0tmp")):  # some days only exist as "-0tmp"
-        tag = f"v{d:%Y.%m.%d}-planes-readsb-{kind}-{suffix}"
-        try:
-            with urllib.request.urlopen(f"https://api.github.com/repos/adsblol/{repo}/releases/tags/{tag}", timeout=60) as r:
-                rel = json.load(r)
-        except Exception:
-            continue
-        urls = sorted(a["browser_download_url"] for a in rel.get("assets", []) if ".tar" in a["name"])
-        if urls:
-            return urls
-    return []
+    """Download URL lists for day d, one per published release (prod first, then staging, then the -0tmp tags)."""
+    # a day's release normally sits in the repo of its own year; 2025-12-31 was published in globe_history_2026
+    out = []
+    for repo in (f"globe_history_{d.year}", f"globe_history_{d.year + 1}"):
+        for kind, suffix in (("prod", "0"), ("staging", "0"), ("prod", "0tmp"), ("staging", "0tmp")):  # some days only exist as "-0tmp"
+            tag = f"v{d:%Y.%m.%d}-planes-readsb-{kind}-{suffix}"
+            try:
+                with urllib.request.urlopen(f"https://api.github.com/repos/adsblol/{repo}/releases/tags/{tag}", timeout=60) as r:
+                    rel = json.load(r)
+            except Exception:
+                continue
+            urls = sorted(a["browser_download_url"] for a in rel.get("assets", []) if ".tar" in a["name"])
+            if urls:
+                out.append(urls)
+    return out
+
+
+def _fetch_release(urls):
+    """Stream one release through cut_stream; returns (DataFrame, None) or (None, error text)."""
+    cmd = "(" + "; ".join(f"curl -sSfL --retry 8 --retry-all-errors --connect-timeout 30 --speed-time 180 --speed-limit 5000 '{u}'" for u in urls) + ")"
+    p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+    try:
+        df = cut_stream(p.stdout)
+    except Exception as e:  # truncated stream etc.
+        p.kill()
+        return None, f"{type(e).__name__}: {e}"
+    left = 0
+    while True:  # the tar reader can stop before the end of the stream; drain it so curl cannot block on a full pipe
+        chunk = p.stdout.read(1 << 20)
+        if not chunk:
+            break
+        left += len(chunk)
+    if left > (1 << 20):  # e.g. the 2025-10-15 prod release: the second part does not continue the archive
+        p.wait()
+        return None, f"tar ended {left / 1e6:.0f} MB before the end of the stream"
+    if p.wait() != 0:
+        return None, f"curl exit {p.returncode}"
+    return df, None
 
 
 def fetch_day(d):
@@ -107,20 +132,19 @@ def fetch_day(d):
     out = os.path.join(ROOT, "cut", f"{d:%Y-%m-%d}.parquet")
     if os.path.exists(out):
         return f"{d} skip"
-    urls = release_parts(d)
-    if not urls:
+    releases = release_parts(d)
+    if not releases:
         return f"{d} ERROR no release"
     t0 = time.time()
     tmp = out + ".part"
-    cmd = "(" + "; ".join(f"curl -sSfL --retry 8 --retry-all-errors --connect-timeout 30 --speed-time 180 --speed-limit 5000 '{u}'" for u in urls) + ")"
-    p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
-    try:
-        df = cut_stream(p.stdout)
-    except Exception as e:  # truncated stream etc.; the day is retried on the next run
-        p.kill()
-        return f"{d} ERROR {type(e).__name__}: {e}"
-    if p.wait() != 0:
-        return f"{d} ERROR curl exit {p.returncode}"
+    errs = []
+    for urls in releases:  # a damaged release falls through to the next published copy of the same day
+        df, err = _fetch_release(urls)
+        if err is None:
+            break
+        errs.append(err)
+    else:
+        return f"{d} ERROR " + "; ".join(errs)
     df.to_parquet(tmp, index=False, compression="zstd")
     os.replace(tmp, out)
     return f"{d} ok {len(df):,} points, {time.time()-t0:.0f}s"

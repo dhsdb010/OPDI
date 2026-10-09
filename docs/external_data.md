@@ -33,12 +33,12 @@ January and July ranking months.
 
 | Dataset | Used for | Source | Licence / attribution as stated by the source | Local path (git-ignored) |
 |---|---|---|---|---|
-| adsb.lol `globe_history_2025` and `globe_history_2026` daily releases: every day of January, February, June and July 2026 (the four final-phase months) and the 2025 days used to train the stage (January and July in full, more months added when available) | Off-block events per departure: first point on the ground and first movement before an observed takeoff, matched to the movement records by callsign and takeoff time (`adsb.py`). Used as inputs of a second stage at EDDF, EDDM, EHAM, LEBL and LSZH (`adsb_stage.py`). | `https://github.com/adsblol/globe_history_2025` and `https://github.com/adsblol/globe_history_2026`, release assets `v<YYYY.MM.DD>-planes-readsb-prod-0.tar.*` (the staging release is used when no prod release exists) | Open Database Licence (ODbL 1.0); the archives carry `LICENSE-ODbL.txt` and `LICENSE-cc0.txt`. Attribution: adsb.lol contributors. | `opdi/adsb/cut/<date>.parquet` (~1.5 GB after cutting; the archives themselves, ~3 GB per day, are streamed and not stored) and `opdi/adsb/feat/<date>.parquet` |
+| adsb.lol `globe_history_2025` and `globe_history_2026` daily releases: every day of January, February, June and July 2026 (the four final-phase months) and all 365 days of 2025 (the stage is trained on out-of-sample predictions for all twelve months) | Off-block events per departure: first point on the ground and first movement before an observed takeoff, matched to the movement records by callsign and takeoff time (`adsb.py`). Used as inputs of a second stage at EDDF, EDDM, EHAM, LEBL and LSZH (`adsb_stage.py`). | `https://github.com/adsblol/globe_history_2025` and `https://github.com/adsblol/globe_history_2026`, release assets `v<YYYY.MM.DD>-planes-readsb-prod-0.tar.*` (the staging release is used when no prod release exists or the prod archive is damaged, as for 2025-10-15; 2025-12-31 is published in the 2026 repository) | Open Database Licence (ODbL 1.0); the archives carry `LICENSE-ODbL.txt` and `LICENSE-cc0.txt`. Attribution: adsb.lol contributors. | `opdi/adsb/cut/<date>.parquet` (~1.5 GB after cutting; the archives themselves, ~3 GB per day, are streamed and not stored) and `opdi/adsb/feat/<date>.parquet` |
 
 Download and cut (resumable; finished days are skipped):
 
 ```
-python adsb.py fetch --days 2025-01,2025-07,2026-01,2026-02,2026-06,2026-07 --procs 8
+python adsb.py fetch --days 2025-01,2025-02,2025-03,2025-04,2025-05,2025-06,2025-07,2025-08,2025-09,2025-10,2025-11,2025-12,2026-01,2026-02,2026-06,2026-07 --procs 8
 python adsb_stage.py events --data DIR
 ```
 
@@ -53,7 +53,7 @@ off-block events) is credited to EnioAguiar/prc-taxiout-2026 (GPLv3) and was imp
 | Dataset | What was tried | Result |
 |---|---|---|
 | OPDI v0.0.2 flight list (EUROCONTROL / OpenSky), `flight_list_202501.parquet`, `https://www.opdi.aero/flight-list-data.html` | Matched departures by callsign and airport to get the aircraft's ground time since its previous landing. | No gain on a January-only check (RMSE 197.2 s without vs 197.3 s with), so it is not used. OPDI states its data may be freely used provided the source is attributed. |
-| adsb.lol global history, whole year 2025 (ODbL 1.0) | Surveyed only. About 2.1 TB for 2025. Only January and July of 2025 and 2026 were downloaded and cut (see above); coverage turned out to be useful at five airports only. | Months other than January and July not downloaded. |
+| adsb.lol global history, whole year 2025 (ODbL 1.0) | Surveyed only. About 2.1 TB for 2025. Every day of 2025 plus the four 2026 ranking months were streamed and cut (see above), about 3 GB streamed per day and not stored; coverage turned out to be useful at five airports only. | The rest of 2026 (Mar to May, Aug onwards) not downloaded. |
 | OPDI flight events and measurements | Checked file sizes only (about 221 MB and 153 MB per 10-day window). | Not downloaded. |
 
 ## Code

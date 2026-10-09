@@ -96,9 +96,11 @@ Run on the final files (`PRC_RANKING` and `PRC_TEMPLATE` replace `ranking.parque
 export PRC_CACHE=/some/folder PRC_RANKING=final_ranking.parquet PRC_TEMPLATE=final_submitting.parquet
 python stack.py submit --data DIR --out final_corrected.parquet    # reuses the out-of-block training predictions of an earlier default run if present
 python specialist.py apply --data DIR --base final_corrected.parquet --out quirky-honey_final_v11.parquet --seeds 5   # fallback file, no ADS-B
-python adsb.py fetch --days 2026-01,2026-02,2026-06,2026-07,2025-01,2025-07 --procs 8     # ADS-B cuts (more 2025 months make the stage training set larger)
-PRC_FEAT_DIR=opdi/adsb/feat_final python adsb_stage.py events --data DIR
-PRC_FEAT_DIR=opdi/adsb/feat_final python adsb_stage.py apply --data DIR --holdout holdout.parquet --base quirky-honey_final_v11.parquet --out quirky-honey_final_v12.parquet
+python adsb.py fetch --days 2026-01,2026-02,2026-06,2026-07,2025-01,2025-02,2025-03,2025-04,2025-05,2025-06,2025-07,2025-08,2025-09,2025-10,2025-11,2025-12 --procs 8   # ADS-B cuts
+PRC_RANKING=final_ranking.parquet PRC_FEAT_DIR=opdi/adsb/feat_final python adsb_stage.py events --data DIR
+python holdout.py --data DIR --all-months --out oos_all.parquet      # out-of-sample v11-style predictions for all twelve months of 2025
+PRC_FEAT_DIR=opdi/adsb/feat_final python adsb_stage.py validate-all --data DIR --holdout oos_all.parquet   # prints KEEP or DO NOT KEEP
+PRC_FEAT_DIR=opdi/adsb/feat_final python adsb_stage.py apply --data DIR --holdout oos_all.parquet --base quirky-honey_final_v11.parquet --out quirky-honey_final_v12_allmonths.parquet
 ```
 
 `python holdout.py --all-months` writes out-of-sample predictions for all twelve months of 2025 (the stage's training set), and
@@ -116,7 +118,21 @@ beats the Jan+Jul stage in both Jan/Jul and Feb/Jun).
 - Local proxy for the final (out-of-sample, every flight kept, all four months of 2025): v11-style 302.8 (Jan 344.5, Feb 261.0, Jun 306.1, Jul 292.9);
   the stage is worth about 5 s on top. Official scores of the Jan/Jul months were about 0.87 times the local figures. In January 2025 five rows alone move
   the RMSE from 217 to 344 (one-day-shift labels), so the final ranking will depend heavily on how those rows fall in the new months.
-- The file submitted as `quirky-honey_final.parquet` is stated here before the deadline: see the last line of this section.
+- `quirky-honey_final_v12_allmonths.parquet`: the same ADS-B stage trained on out-of-sample predictions for all twelve months of 2025 (2,083,124 flights; ADS-B
+  cuts for all 365 days of 2025 and the four 2026 ranking months) instead of Jan+Jul only. `adsb_stage.py validate-all` compares, on the four months
+  Jan, Feb, Jun, Jul 2025 with every flight kept and the stage never seeing the month it is scored on (leave-one-week-out):
+
+  | | v11-style | Jan+Jul stage | all-months stage |
+  |---|---|---|---|
+  | Jan + Jul (344,419 flights) | 317.0 | 312.2 | 312.0 |
+  | Feb + Jun (326,873 flights) | 287.1 | 279.4 | 278.0 |
+  | all four months (671,292 flights) | 302.8 | 296.7 | 295.9 |
+
+  It beats the Jan+Jul stage in both month groups, so it is kept (the rule set in advance), but by 0.2 s and 1.4 s only. Template checks pass (670,790 rows,
+  IDs, order, dtypes, no NaN or infinity). It differs from `quirky-honey_final_v12.parquet` by 48 s RMS (both differ from the fallback by 63-64 s).
+
+- Submitted as `quirky-honey_final.parquet`: `quirky-honey_final_v12_allmonths.parquet`. `quirky-honey_final_v12.parquet` (Jan+Jul stage) and
+  `quirky-honey_final_v11.parquet` (no ADS-B) are the fallbacks and were not submitted.
 
 
 ## Official leaderboard history (RMSE, s)
@@ -294,10 +310,12 @@ off-block events and applies the stage; see `docs/external_data.md` for the sour
 - Log-target blend for the stage-2 regressor on non-copy flights (same features and rows, Jan+Jul 2025 holdout, normal flights):
   raw target 233.72, log target with smearing 238.28, best blend (25% log) 233.51 with January better and July worse. The
   predictions correlate at 0.988, so the target change adds little diversity; not kept, and not carried into the full base model.
-- More ADS-B months: downloading the other ten months of 2025 (about 300 days, ~3 GB streamed per day) to train the stage on about a
-  million flights was started and abandoned. Inbound speed fell from about 30 MB/s (the first 124 days) to 1-2 MB/s, a
-  shared network that does not leave room for hundreds of GB; it can be resumed with the same `adsb.py fetch` command (finished days
-  are skipped).
+- More ADS-B months: downloading the other ten months of 2025 (about 300 days, ~3 GB streamed per day) was first started and abandoned
+  on a shared network (inbound speed fell from about 30 MB/s to 1-2 MB/s). It was resumed after the final-phase announcement, with
+  Feb to Jun fetched locally and Aug to Dec on a server owned by the team, and is now complete (all 365 days of 2025); see "Final phase".
+  Three days needed special handling: the 2025-10-15 "prod" release is truncated (its second part does not continue the archive), so the
+  "staging" copy of the same day is used; 2025-12-31 was published in the `globe_history_2026` repository; and 2025-09-26 stalled once on a
+  dead connection. `adsb.py fetch` now tries every published copy of a day in turn and drains the stream so a damaged archive cannot hang a worker.
 - `quirky-honey_v13.parquet`: an alternative, independently developed pipeline (two-stage copy mixture with a 50/50 blend of a raw-target
   and a log-target regressor, no ADS-B, no LIRF specialist), uploaded once as a test candidate. Official leaderboard RMSE 303.14 s,
   33.8 s worse than v12 and about equal to our v6. Its own report had estimated about 274 s from a local validation whose gain was
