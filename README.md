@@ -95,6 +95,7 @@ does not reproduce to the last digit, so expect differences of a fraction of a s
 | quirky-honey_v10 (v7 + LIRF no-NM specialist) | 277.94 | not best |
 | quirky-honey_v11 (v9 + neighbour-delay inputs in the corrector) | 276.30 | 74 / 237 |
 | quirky-honey_v12 (v11 + ADS-B stage) | 269.33 | 62 / 238 |
+| quirky-honey_v13 (alternative pipeline, not used) | 303.14 | not best |
 
 (`quirky-honey_v8` is the same file as v9; it was rejected by the scorer for the daily upload limit and has no score.
 v7 itself, the v6 pipeline with 5 LightGBM base members, was not uploaded without the specialist.)
@@ -261,6 +262,11 @@ off-block events and applies the stage; see `docs/external_data.md` for the sour
   million flights was started and abandoned. Inbound speed fell from about 30 MB/s (the first 124 days) to 1-2 MB/s, a
   shared network that does not leave room for hundreds of GB; it can be resumed with the same `adsb.py fetch` command (finished days
   are skipped).
+- `quirky-honey_v13.parquet`: an alternative, independently developed pipeline (two-stage copy mixture with a 50/50 blend of a raw-target
+  and a log-target regressor, no ADS-B, no LIRF specialist), uploaded once as a test candidate. Official leaderboard RMSE 303.14 s,
+  33.8 s worse than v12 and about equal to our v6. Its own report had estimated about 274 s from a local validation whose gain was
+  concentrated in one month (February, -32.5 s of a -9.7 s four-month average); our own test of the same log-target blend inside the
+  stage-2 regressor gave 0.2 s at best. Not used for the final phase.
 - Tried and not kept on the corrector (all on top of the v11 corrector, both months required to improve): arrival taxi-in near
   push-back (-0.14 s, within noise), NM time-consistency differences, within-hour rank of the taxi proxy, stand-prefix groups,
   an ML-fitted unimpeded taxi time and an ATFM-style airport x 2-hour x weekday cell (January better, July worse).
