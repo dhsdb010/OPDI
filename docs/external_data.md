@@ -33,12 +33,12 @@ January and July ranking months.
 
 | Dataset | Used for | Source | Licence / attribution as stated by the source | Local path (git-ignored) |
 |---|---|---|---|---|
-| adsb.lol `globe_history_2025` and `globe_history_2026` daily releases, 124 days: every day of January and July 2025 and of January and July 2026 | Off-block events per departure: first point on the ground and first movement before an observed takeoff, matched to the movement records by callsign and takeoff time (`adsb.py`). Used as inputs of a second stage at EDDF, EDDM, EHAM, LEBL and LSZH (`adsb_stage.py`). | `https://github.com/adsblol/globe_history_2025` and `https://github.com/adsblol/globe_history_2026`, release assets `v<YYYY.MM.DD>-planes-readsb-prod-0.tar.*` (the staging release is used when no prod release exists) | Open Database Licence (ODbL 1.0); the archives carry `LICENSE-ODbL.txt` and `LICENSE-cc0.txt`. Attribution: adsb.lol contributors. | `opdi/adsb/cut/<date>.parquet` (~1.5 GB after cutting; the archives themselves, ~3 GB per day, are streamed and not stored) and `opdi/adsb/feat/<date>.parquet` |
+| adsb.lol `globe_history_2025` and `globe_history_2026` daily releases: every day of January, February, June and July 2026 (the four final-phase months) and the 2025 days used to train the stage (January and July in full, more months added when available) | Off-block events per departure: first point on the ground and first movement before an observed takeoff, matched to the movement records by callsign and takeoff time (`adsb.py`). Used as inputs of a second stage at EDDF, EDDM, EHAM, LEBL and LSZH (`adsb_stage.py`). | `https://github.com/adsblol/globe_history_2025` and `https://github.com/adsblol/globe_history_2026`, release assets `v<YYYY.MM.DD>-planes-readsb-prod-0.tar.*` (the staging release is used when no prod release exists) | Open Database Licence (ODbL 1.0); the archives carry `LICENSE-ODbL.txt` and `LICENSE-cc0.txt`. Attribution: adsb.lol contributors. | `opdi/adsb/cut/<date>.parquet` (~1.5 GB after cutting; the archives themselves, ~3 GB per day, are streamed and not stored) and `opdi/adsb/feat/<date>.parquet` |
 
 Download and cut (resumable; finished days are skipped):
 
 ```
-python adsb.py fetch --days 2025-01,2025-07,2026-01,2026-07 --procs 8
+python adsb.py fetch --days 2025-01,2025-07,2026-01,2026-02,2026-06,2026-07 --procs 8
 python adsb_stage.py events --data DIR
 ```
 

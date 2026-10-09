@@ -83,6 +83,42 @@ does not reproduce to the last digit, so expect differences of a fraction of a s
 
 `specialist.py validate` and `stack.py validate --variants --ensemble` print the validation tables quoted in this README.
 
+## Final phase (Jan, Feb, Jun, Jul 2026)
+The organisers added a single blind final submission: `final_ranking.parquet` (670,790 departures of Jan, Feb, Jun and Jul 2026, same columns and
+airports as `ranking.parquet`; take-off and arrival times carry a deliberate +-12 s dither, so the old predictions are not reused) and the template
+`final_submitting.parquet`. It is ranked on Jan/Jul, on Feb/Jun and on all four months. The model design is unchanged; only the file names are
+settings. The organisers stated on their Discord (26 Sep) that open data sources may be used to devise a better model, and that feature
+engineering with the provided data is permitted.
+
+Run on the final files (`PRC_RANKING` and `PRC_TEMPLATE` replace `ranking.parquet` and `submitting.parquet` everywhere):
+
+```bash
+export PRC_CACHE=/some/folder PRC_RANKING=final_ranking.parquet PRC_TEMPLATE=final_submitting.parquet
+python stack.py submit --data DIR --out final_corrected.parquet    # reuses the out-of-block training predictions of an earlier default run if present
+python specialist.py apply --data DIR --base final_corrected.parquet --out quirky-honey_final_v11.parquet --seeds 5   # fallback file, no ADS-B
+python adsb.py fetch --days 2026-01,2026-02,2026-06,2026-07,2025-01,2025-07 --procs 8     # ADS-B cuts (more 2025 months make the stage training set larger)
+PRC_FEAT_DIR=opdi/adsb/feat_final python adsb_stage.py events --data DIR
+PRC_FEAT_DIR=opdi/adsb/feat_final python adsb_stage.py apply --data DIR --holdout holdout.parquet --base quirky-honey_final_v11.parquet --out quirky-honey_final_v12.parquet
+```
+
+`python holdout.py --all-months` writes out-of-sample predictions for all twelve months of 2025 (the stage's training set), and
+`python adsb_stage.py validate-all` is the check that decides whether the stage may be trained on all months instead of Jan+Jul only (kept only if it
+beats the Jan+Jul stage in both Jan/Jul and Feb/Jun).
+
+- `quirky-honey_final_v11.parquet` (fallback): the v11 pipeline run on the final file plus the LIRF no-NM specialist. Template checks pass (670,790 rows,
+  IDs, order, dtypes, no NaN or infinity).
+- `quirky-honey_final_v12.parquet` (primary candidate): the same plus the ADS-B stage trained on the Jan+Jul 2025 out-of-sample predictions. It changes the
+  fallback by 63 s RMS (mean +0.4 s). Coverage of matched ADS-B flights is steady at EDDM, EHAM, LEBL and LSZH in all four months; EDDF had a gap in
+  February 2026 (8% matched against 50-61% in the other months), where the stage simply has no ADS-B input.
+- Does the stage transfer to the new seasons? A stage trained on Jan+Jul 2025 only was tested on the days of Feb to May 2025 that were downloaded at the
+  time. It beat both the v11-style prediction and a no-ADS-B control in every month: Feb 224.3 -> 219.8 (control) -> 214.5, Mar 192.3 -> 195.1 -> 188.2,
+  Apr 201.6 -> 203.3 -> 196.3, May 242.4 -> 244.2 -> 237.4, Jun 193.9 -> 194.4 -> 193.1 (only about a week of June at that time).
+- Local proxy for the final (out-of-sample, every flight kept, all four months of 2025): v11-style 302.8 (Jan 344.5, Feb 261.0, Jun 306.1, Jul 292.9);
+  the stage is worth about 5 s on top. Official scores of the Jan/Jul months were about 0.87 times the local figures. In January 2025 five rows alone move
+  the RMSE from 217 to 344 (one-day-shift labels), so the final ranking will depend heavily on how those rows fall in the new months.
+- The file submitted as `quirky-honey_final.parquet` is stated here before the deadline: see the last line of this section.
+
+
 ## Official leaderboard history (RMSE, s)
 
 | File | Official RMSE | Rank |
