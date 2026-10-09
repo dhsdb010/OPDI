@@ -303,6 +303,17 @@ off-block events and applies the stage; see `docs/external_data.md` for the sour
   33.8 s worse than v12 and about equal to our v6. Its own report had estimated about 274 s from a local validation whose gain was
   concentrated in one month (February, -32.5 s of a -9.7 s four-month average); our own test of the same log-target blend inside the
   stage-2 regressor gave 0.2 s at best. Not used for the final phase.
+- Callsign-recurrence features for the LIRF no-NM specialist (tested 2026-10-09). The rows with unexplained huge labels (15 in 2025, all without an
+  NM record) are not copies of the previous day's block of the same flight number (the previous record of that flight number is usually days or weeks
+  earlier and its block time does not match). They are mostly one-off flight numbers: among no-NM flights at LIRF the rate is 1.24% (10 of 810) when the
+  flight number does not also leave the airport about a day before or after, against 0.30% (2 of 677) when it does; at the other airports 3 of 7,736
+  one-off no-NM rows and 0 of 13,201 recurring ones (about 0.04%), too rare for a hedge to matter (about 0.002 s). Adding "same flight number 18-30 h
+  before / after" and the hours since the previous same-flight-number departure to the specialist, leave-one-month-out with 6 seeds: scope RMSE over the
+  twelve months 3968 -> 3883, better in 11 of 12 months (June worse, 6767 -> 6838). On the four final months with every flight kept: Jan 344.5 -> 343.5,
+  Feb 260.9 -> 260.9, Jun 306.3 -> 307.9, Jul 292.2 -> 289.7, i.e. Jan+Jul 316.6 -> 314.8, Feb+Jun 287.3 -> 288.2, four months 302.7 -> 302.2. Not kept:
+  the gain is 0.5 s because the error sits in a few rows no flag can single out, and Feb+Jun does not improve.
+- The January 2025 RMSE of 344.5 (217.0 without its five worst rows) is dominated by two LFPG flights without an NM record whose recorded off-block time is
+  about 23 h and 16 h before takeoff (labels 84,240 s and 58,206 s) while their schedule gap is under 35 min; nothing observable at prediction time marks them.
 - Tried and not kept on the corrector (all on top of the v11 corrector, both months required to improve): arrival taxi-in near
   push-back (-0.14 s, within noise), NM time-consistency differences, within-hour rank of the taxi proxy, stand-prefix groups,
   an ML-fitted unimpeded taxi time and an ATFM-style airport x 2-hour x weekday cell (January better, July worse).
