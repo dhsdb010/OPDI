@@ -26,9 +26,9 @@ FEAT_DIR = os.environ.get("PRC_FEAT_DIR", os.path.join(adsb.ROOT, "feat"))
 BASE_COLS = ["pred", "p_copy", "ml_aobt", "ap"]
 ADSB_COLS = ["adsb_taxi", "adsb_taxi_move", "adsb_gs0", "adsb_parked", "adsb_takeoff_err", "adsb_n", "adsb_gap_max",
              "ad_minus_pred", "ad_minus_aobt"]
-PARAMS = dict(objective="regression", learning_rate=0.05, num_leaves=31, min_data_in_leaf=100, lambda_l2=10, feature_fraction=0.9,
+PARAMS = dict(objective="regression", learning_rate=0.05, num_leaves=63, min_data_in_leaf=100, lambda_l2=10, feature_fraction=0.9,
               bagging_fraction=0.8, bagging_freq=1, verbose=-1, num_threads=4)
-ROUNDS = 300
+ROUNDS = 600
 AIRPORTS = sorted(adsb.AIRPORTS)
 # ADS-B inputs are used only where the 2025 training months have stable, meaningful coverage. At the other airports the
 # 2026 ranking months have a very different share of matched flights (EGLL 14% -> 80%, LEMD 2% -> 64%, LIRF 44% -> 24%),

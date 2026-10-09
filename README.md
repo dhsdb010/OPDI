@@ -131,8 +131,14 @@ beats the Jan+Jul stage in both Jan/Jul and Feb/Jun).
   It beats the Jan+Jul stage in both month groups, so it is kept (the rule set in advance), but by 0.2 s and 1.4 s only. Template checks pass (670,790 rows,
   IDs, order, dtypes, no NaN or infinity). It differs from `quirky-honey_final_v12.parquet` by 48 s RMS (both differ from the fallback by 63-64 s).
 
-- Submitted as `quirky-honey_final.parquet`: `quirky-honey_final_v12_allmonths.parquet`. `quirky-honey_final_v12.parquet` (Jan+Jul stage) and
-  `quirky-honey_final_v11.parquet` (no ADS-B) are the fallbacks and were not submitted.
+- `quirky-honey_final_stage600.parquet`: the same all-months stage with more capacity (600 rounds, 63 leaves instead of 300 and 31), since the training set is now
+  6 times larger than the one the old size was chosen on. Same leave-one-week-out protocol, four variants tried (all flights kept, Jan+Jul / Feb+Jun / all four):
+  300 rounds, 31 leaves 311.98 / 277.99 / 295.92; 600 rounds, 63 leaves 311.87 / 276.30 / 295.08 (kept: better in both groups, but nearly all of the gain is
+  February, 245.9 -> 241.6, and Jan+Jul moves by 0.1 s); 800 rounds, learning rate 0.03, 127 leaves 311.78 / 276.55 / 295.15 (also better in both, not chosen, no
+  simpler); adding hour of day and weekday 312.05 / 278.90 / 296.37 (worse in both groups, not kept; with the larger model 311.98 / 278.14 / 295.99, not kept either).
+  Template checks pass; it differs from `quirky-honey_final_v12_allmonths.parquet` by 16 s RMS.
+- Submitted as `quirky-honey_final.parquet`: `quirky-honey_final_stage600.parquet`. `quirky-honey_final_v12_allmonths.parquet`, `quirky-honey_final_v12.parquet`
+  (Jan+Jul stage) and `quirky-honey_final_v11.parquet` (no ADS-B) are the fallbacks and were not submitted.
 
 
 ## Official leaderboard history (RMSE, s)
@@ -306,7 +312,7 @@ off-block events and applies the stage; see `docs/external_data.md` for the sour
 - Stage variants (leave-one-week-out on all of Jan+Jul 2025, against the stage used in v12: 308.08, Jan 335.75, Jul 283.81; keep only
   if both months improve): neighbour ADS-B inputs (mean ADS-B minus NM off-block estimate and share seen parked among the other
   flights within +-30/60 min at the airport) 307.89 but January 335.79, not kept; 150 rounds 308.17 and 600 rounds 308.30, not kept
-  (300 is the right size); 5 seeds instead of 3 in the final fit 307.98, both months better but only by 0.1 s, not worth a new file.
+  (300 was the right size for the 343,917-flight training set of v12; with all twelve months the larger setting wins, see "Final phase"); 5 seeds instead of 3 in the final fit 307.98, both months better but only by 0.1 s, not worth a new file.
 - Log-target blend for the stage-2 regressor on non-copy flights (same features and rows, Jan+Jul 2025 holdout, normal flights):
   raw target 233.72, log target with smearing 238.28, best blend (25% log) 233.51 with January better and July worse. The
   predictions correlate at 0.988, so the target change adds little diversity; not kept, and not carried into the full base model.
