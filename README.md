@@ -137,6 +137,10 @@ beats the Jan+Jul stage in both Jan/Jul and Feb/Jun).
   February, 245.9 -> 241.6, and Jan+Jul moves by 0.1 s); 800 rounds, learning rate 0.03, 127 leaves 311.78 / 276.55 / 295.15 (also better in both, not chosen, no
   simpler); adding hour of day and weekday 312.05 / 278.90 / 296.37 (worse in both groups, not kept; with the larger model 311.98 / 278.14 / 295.99, not kept either).
   Template checks pass; it differs from `quirky-honey_final_v12_allmonths.parquet` by 16 s RMS.
+- Aircraft turnaround from ADS-B (time from the aircraft's previous landing at the same airport to its first ground point, first movement and takeoff; known for
+  57% of the flights at the five airports in 2025 but 23% -> 62% at LSZH and 49% -> 29% at EDDF in 2026): on top of the 600-round stage the four-month proxy goes
+  295.08 -> 294.99 (Jan+Jul 311.87 -> 311.80, Feb+Jun 276.30 -> 276.16). Better in both groups but by under 0.15 s, inside the noise of choosing among variants and with
+  a coverage shift at two airports; not adopted.
 - Submitted as `quirky-honey_final.parquet`: `quirky-honey_final_stage600.parquet`. `quirky-honey_final_v12_allmonths.parquet`, `quirky-honey_final_v12.parquet`
   (Jan+Jul stage) and `quirky-honey_final_v11.parquet` (no ADS-B) are the fallbacks and were not submitted.
 
@@ -192,6 +196,25 @@ Did not work / not worth it:
   Jan/Jul, mainly because they exclude MVT_TIME and AOBT_3 and have no copy-regime or LOBT handling. Only per-airport models
   helped (kept). Wind along the runway heading was neutral (353.8 -> 353.8; off by default via PRC_WIND=1). Stand-to-runway
   distance needs geometry files not available here.
+- Where the remaining error sits (final-phase check on the out-of-sample 2025 predictions of Jan, Feb, Jun, Jul, v11-style RMSE 302.8, every flight kept):
+  60 rows hold 35% of the squared error (RMSE 243.7 without them). 24 no-NM rows with a one-day-shift label (22 at LIRF, 2 at LFPG, labels above 30,000 s)
+  alone hold 29%: removing only them would give about 255 s. The copy mixture is calibrated (actual copy rate per P(copy) bucket 0.01, 0.13, 0.29, 0.43, 0.59, 0.82, 0.91)
+  and even a perfect copy label would only take 302.8 to 286.4; for the rows where the mixture is uncertain (0.2 < P(copy) < 0.8, 18% of rows) the ceiling is 297.1.
+  Retuning the base mixture therefore has at most a few seconds to win and was not run. A mean-residual shift for no-NM rows at LTFM (labels average 1750 s against
+  1273 s predicted), EGLL and LFPG, learned leave-one-month-out, did nothing (four-month 302.81 -> 302.82 at best, worse with more airports); not kept.
+- What the huge labels are (all 54 departures above 30,000 s in 2025): 38 are copies of the schedule with a real delay of 8.6 to 36.4 hours (BLOCK within 6 s
+  of SCHED, label = MVT - SCHED), 13 are a one-day date error (label 85,000 to 90,000 s: an ordinary 600 to 2,000 s taxi plus 86,400 s, i.e. BLOCK has the right time
+  of day on the previous date; 12 at LIRF, 1 at LSZH, nearly all flights delayed across midnight) and 3 are other date mix-ups (2 at LFPG, 1 at LIRF). 50 of the 54 are LIRF
+  flights without an NM record (51 at LIRF in all); no-NM flights at the other airports never copy the schedule. For LIRF no-NM flights delayed 12 to 24 hours across
+  midnight the 2025 outcomes were 14 copies, 9 date shifts and 0 normal flights. The 2 LFPG labels of 84,240 s and 58,206 s together hold 16.7% of the squared error of the
+  four months; their schedule gap is about 30 minutes and nothing visible marks them (1,454 LFPG no-NM departures, 2 such labels). Explicit class-mixture rules for the long-delay LIRF no-NM rows, with the class rates learned
+  leave-one-month-out, are all worse than the learned specialist: delay > 12 h across midnight, copy/shift/normal mixture 306.1 against 302.81; shift component
+  only 305.3 to 305.8; thresholds of 8.3 and 10 h 304 to 306; a multinomial logistic classifier on log delay, midnight crossing and time of day (delay > 3 h or > 6 h, 12
+  variants) 306.5 to 308.4. With 9 shift events in the whole year the class rates are too noisy, and the CatBoost hedge already sits between the classes. Not kept.
+- Year-over-year level check (median predicted taxi time of the 2026 ranking months against the median 2025 label of the same month and airport, rows of 60 to 3,600 s): the
+  predictions are mostly 0 to +60 s above 2025, and +82 to +150 s in January 2026 at EDDF, EDDM and LTFM. The ADS-B first-movement-to-takeoff time, an independent
+  measurement, is higher in January 2026 too at EDDM (+100 s), EHAM (+114 s) and LSZH (+92 s), so the shift looks real (weather features). It is lower at EDDF in Feb, Jun and Jul
+  2026 (-110 to -146 s), where the matched share of 2026 departures is 47% overall and 8% in February; not acted on, there are no 2026 labels to check it against.
 - Shrinking or capping extreme predictions: worse. Scaling them up 1.25x looked better but only through
   luck on a handful of July rows, so it was not kept.
 
